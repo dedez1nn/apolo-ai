@@ -10,6 +10,8 @@ import sys
 import tomllib
 
 from apolo.actions import dispatch
+from apolo.ai.ollama import OllamaClient
+from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import Config
 from apolo.fetch.imap import BridgeClient
 from apolo.rules.engine import RuleEngine
@@ -19,9 +21,17 @@ from apolo.tui import review_queue
 
 
 def cmd_run(config: Config) -> int:
-    """Uma passada: busca os UIDs novos, classifica pela cascata e grava."""
+    """Uma passada: busca os novos, classifica pela cascata e manda o resíduo pra IA."""
     config.require_credentials()
     engine = RuleEngine.from_file(config.rules_path)
+
+    # A IA é opcional: se o Ollama estiver fora, o resíduo só fica em 'revisar'.
+    ollama = OllamaClient(
+        config.ollama_url, config.ollama_model, keep_alive=config.ollama_keep_alive
+    )
+    ai_ready = config.ai_enabled and ollama.available()
+    if config.ai_enabled and not ai_ready:
+        print("IA indisponível (Ollama fora do ar) — resíduo fica como 'revisar'.")
 
     total_novos = 0
     acoes: dict[str, int] = {}
@@ -44,6 +54,7 @@ def cmd_run(config: Config) -> int:
                     store.reset_folder(pasta)
 
                 novos_pasta = 0
+                residuo = []  # emails que a cascata não resolveu (vão pra IA)
                 for m in result.novos:
                     if store.insert_email(
                         pasta=pasta,
@@ -76,6 +87,14 @@ def cmd_run(config: Config) -> int:
                         regra_casada=decisao.regra_casada,
                     )
                     acoes[decisao.acao_sugerida] = acoes.get(decisao.acao_sugerida, 0) + 1
+                    if decisao.regra_casada == "default":
+                        residuo.append(m)
+
+                # 2ª passada: só o resíduo vai pro Ollama (já quente). A pasta
+                # segue selecionada do fetch_new, então fetch_message funciona.
+                if ai_ready and residuo:
+                    n_ia = _ai_pass(client, store, ollama, pasta, result.uidvalidity, residuo)
+                    print(f"[{pasta}] IA classificou {n_ia}/{len(residuo)} do resíduo.")
 
                 store.set_folder_meta(pasta, result.uidvalidity, result.ultimo_uid)
                 total_novos += novos_pasta
@@ -84,8 +103,39 @@ def cmd_run(config: Config) -> int:
     print(f"\n{total_novos} email(s) novo(s).")
     if acoes:
         resumo = ", ".join(f"{n} {acao}" for acao, n in sorted(acoes.items()))
-        print(f"Sugestões desta passada: {resumo}.")
+        print(f"Sugestões da cascata: {resumo}.")
     return 0
+
+
+def _ai_pass(client, store, ollama, pasta, uidvalidity, residuo) -> int:
+    """Classifica o resíduo pelo Ollama: corpo limpo -> sugestão. Falha por email é ignorada.
+
+    A IA só enriquece a sugestão; o email continua na fila (aguardando) pro dono
+    confirmar. Nada é executado aqui.
+    """
+    classificados = 0
+    for m in residuo:
+        try:
+            msg = client.fetch_message(m.uid)
+            trecho = clean_for_classification(message_to_text(msg)) if msg else ""
+            decisao = ollama.classify(
+                assunto=m.assunto, remetente=m.remetente, trecho=trecho
+            )
+        except Exception:
+            decisao = None
+        if decisao is None:
+            continue
+        store.classify_email(
+            pasta=pasta,
+            uidvalidity=uidvalidity,
+            uid=m.uid,
+            status=STATUS_AGUARDANDO,
+            categoria=decisao.categoria,
+            acao_sugerida=decisao.acao,
+            regra_casada=f"ia:{decisao.categoria}",
+        )
+        classificados += 1
+    return classificados
 
 
 def cmd_status(config: Config) -> int:

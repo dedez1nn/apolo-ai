@@ -55,6 +55,11 @@ class Config:
     folders: tuple[str, ...] = ("INBOX",)
     # Pasta de lixeira do Proton (atributo \Trash no Bridge).
     trash_folder: str = "Trash"
+    # IA (Ollama) — classifica só o resíduo que as regras não resolveram.
+    ai_enabled: bool = True
+    ollama_url: str = "http://127.0.0.1:11434"
+    ollama_model: str = "llama3.2"
+    ollama_keep_alive: str = "30m"
 
     @classmethod
     def load(cls) -> "Config":
@@ -89,6 +94,10 @@ class Config:
             rules_path=rules_path,
             folders=folders or ("INBOX",),
             trash_folder=get("APOLO_TRASH_FOLDER", "Trash"),
+            ai_enabled=get("APOLO_AI_ENABLED", "true").lower() in ("1", "true", "yes", "sim"),
+            ollama_url=get("APOLO_OLLAMA_URL") or get("OLLAMA_HOST") or "http://127.0.0.1:11434",
+            ollama_model=get("APOLO_OLLAMA_MODEL", "llama3.2"),
+            ollama_keep_alive=get("APOLO_OLLAMA_KEEP_ALIVE", "30m"),
         )
 
     def require_credentials(self) -> None:

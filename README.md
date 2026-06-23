@@ -6,11 +6,11 @@ pessoal, na própria máquina — lê o Proton Mail via **Proton Bridge** (IMAP 
 
 A arquitetura completa e os princípios de design estão em [`apolo.md`](apolo.md).
 
-## Estado atual — passos 1, 1.5, 2 e 3 do roadmap
+## Estado atual — passos 1 a 4 do roadmap
 
 Implementado o **backbone** (fetch incremental + SQLite), a **limpeza de corpo
-HTML/CSS**, o **motor de regras determinístico** e a **fila de revisão (TUI)**
-com `block`/`allow` de terminal.
+HTML/CSS**, o **motor de regras determinístico**, a **fila de revisão (TUI)** com
+`block`/`allow` de terminal e a **classificação do resíduo via Ollama**.
 
 ```
 apolo/
@@ -20,6 +20,7 @@ apolo/
   clean.py             # HTML/CSS -> texto limpo (passo 1.5)
   actions.py           # despacha a fila: move pra Trash + loga (passo 3)
   tui.py               # fila de revisão em curses (passo 3)
+  ai/ollama.py         # classificação do resíduo via Ollama (passo 4)
   fetch/imap.py        # conexão Bridge, busca incremental + copy/expunge
   storage/db.py        # SQLite: emails + acoes (log p/ undo) + meta
   rules/engine.py      # cascata de precedência (passo 2)
@@ -28,7 +29,7 @@ apolo/
 ```
 
 Sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`, `ssl`,
-`html.parser`, `tomllib`, `curses`).
+`html.parser`, `tomllib`, `curses`, `urllib`).
 
 ## Limpeza de corpo (passo 1.5)
 
@@ -69,6 +70,10 @@ cp .env.example .env
 | `APOLO_DB_PATH`       | `~/.local/share/apolo/apolo.db` | caminho do banco de estado             |
 | `APOLO_RULES_PATH`    | `apolo/rules/config.toml`       | arquivo de regras                      |
 | `APOLO_TRASH_FOLDER`  | `Trash`                         | pasta de lixeira do Proton             |
+| `APOLO_AI_ENABLED`    | `true`                          | liga/desliga a classificação por IA    |
+| `APOLO_OLLAMA_URL`    | `http://127.0.0.1:11434`        | endereço do Ollama                     |
+| `APOLO_OLLAMA_MODEL`  | `llama3.2`                      | modelo do Ollama (ajuste pro seu)      |
+| `APOLO_OLLAMA_KEEP_ALIVE` | `30m`                       | mantém o modelo quente na RAM          |
 
 ## Uso
 
@@ -124,6 +129,22 @@ permanecem na fila pra próxima.
 Mover pra lixeira aqui é sempre **manual** (você despacha). A execução sem o dono
 fica pro passo 6.
 
+## Classificação por IA (passo 4)
+
+Só o **resíduo** que a cascata deixou em `default`/`revisar` vai pro Ollama —
+as regras burras resolvem a maior parte de graça. Pra esses, o `run` busca o
+corpo (`BODY.PEEK[]`, não marca lido), limpa o HTML e manda **só assunto +
+primeiras linhas** (`apolo/ai/ollama.py`), nunca o corpo inteiro: rápido e
+privado. A conversa é via API HTTP do Ollama (`urllib`, stdlib).
+
+- `keep_alive` alto mantém o modelo quente na RAM entre execuções — o custo vira
+  inferir, não recarregar.
+- A IA só **sugere**: o resultado vira a ação sugerida (`regra_casada = ia:<cat>`)
+  e o email **continua na fila** pro dono confirmar. Nada é apagado pela IA.
+- É opcional e tolerante a falha: se o Ollama estiver fora, o modelo ausente, ou
+  a resposta vier fora do contrato, o resíduo só fica em `revisar` e o `run`
+  segue normal. Ajuste `APOLO_OLLAMA_MODEL` pro modelo que você tem instalado.
+
 ## Como funciona o fetch incremental
 
 - Seleciona a pasta em modo **readonly** (`EXAMINE`) e usa **`BODY.PEEK`**, então
@@ -136,6 +157,5 @@ fica pro passo 6.
 
 ## Próximos passos (roadmap)
 
-4. Camada Ollama pro resíduo.
 5. `notify-send` + systemd timer.
 6. Promoção de regra pra automático + `apolo undo`.
