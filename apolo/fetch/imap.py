@@ -13,6 +13,7 @@ import imaplib
 import ssl
 from dataclasses import dataclass
 from email.header import decode_header
+from email.message import Message
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,19 @@ class BridgeClient:
             novos=novos,
             ultimo_uid=max_uid,
         )
+
+    def fetch_message(self, uid: int) -> Message | None:
+        """Busca a mensagem inteira via BODY.PEEK[] (não marca lido).
+
+        Só pro resíduo que a IA precisa ler (passo 4). Combine com
+        apolo.clean.message_to_text pra obter o texto limpo. Requer a pasta já
+        selecionada (chame depois de fetch_new na mesma sessão).
+        """
+        assert self._imap is not None
+        typ, data = self._imap.uid("fetch", str(uid), "(BODY.PEEK[])")
+        if typ != "OK" or not data or not isinstance(data[0], tuple):
+            return None
+        return email.message_from_bytes(data[0][1])
 
     def _fetch_headers(self, uid: int) -> FetchedEmail | None:
         """Busca só os headers de interesse via BODY.PEEK (não marca lido)."""

@@ -6,20 +6,42 @@ pessoal, na própria máquina — lê o Proton Mail via **Proton Bridge** (IMAP 
 
 A arquitetura completa e os princípios de design estão em [`apolo.md`](apolo.md).
 
-## Estado atual — passo 1 do roadmap
+## Estado atual — passo 1 (+1.5) do roadmap
 
-Implementado o **backbone**: fetch incremental por UID + esquema SQLite.
+Implementado o **backbone**: fetch incremental por UID + esquema SQLite, mais a
+limpeza de corpo HTML/CSS.
 
 ```
 apolo/
   __init__.py
   config.py          # credenciais/Bridge via env + .env (parser stdlib)
   cli.py             # apolo run / apolo status
+  clean.py           # HTML/CSS -> texto limpo (passo 1.5)
   fetch/imap.py      # conexão Bridge, busca incremental por UID (BODY.PEEK)
   storage/db.py      # SQLite: emails + acoes (log p/ undo) + meta
 ```
 
-Sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`, `ssl`).
+Sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`, `ssl`,
+`html.parser`).
+
+## Limpeza de corpo (passo 1.5)
+
+`apolo/clean.py` transforma corpo de email em texto legível antes de chegar nas
+regras (passo 2) ou na IA (passo 4):
+
+- `strip_html(html)` — remove tags, atributos (CSS inline) e o conteúdo de
+  `<style>`/`<script>`/`<head>`; decodifica entidades (`&nbsp;`, `&ccedil;`…).
+- `message_to_text(msg)` — escolhe a melhor parte MIME (prefere `text/plain`,
+  cai pro `text/html` limpo), ignora anexos.
+- `clean_for_classification(text)` — normaliza espaços e trunca em linhas/caracteres
+  (assunto + primeiras linhas é o que vai pra IA).
+
+O corpo só é buscado sob demanda, via `BridgeClient.fetch_message(uid)`
+(`BODY.PEEK[]`, não marca lido) — coerente com "corpo só se a IA precisar".
+
+**Stop words não são removidas, de propósito.** Stop word removal ajuda modelos
+clássicos (bag-of-words/TF-IDF) mas atrapalha um LLM, que depende da linguagem
+natural pra entender contexto. O texto segue como linguagem natural, só limpo.
 
 ## Configuração
 
