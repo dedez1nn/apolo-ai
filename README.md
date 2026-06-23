@@ -6,30 +6,34 @@ pessoal, na própria máquina — lê o Proton Mail via **Proton Bridge** (IMAP 
 
 A arquitetura completa e os princípios de design estão em [`apolo.md`](apolo.md).
 
-## Estado atual — passos 1 a 4 do roadmap
+## Estado atual — passos 1 a 5 do roadmap
 
 Implementado o **backbone** (fetch incremental + SQLite), a **limpeza de corpo
 HTML/CSS**, o **motor de regras determinístico**, a **fila de revisão (TUI)** com
-`block`/`allow` de terminal e a **classificação do resíduo via Ollama**.
+`block`/`allow` de terminal, a **classificação do resíduo via Ollama** e as
+**notificações `notify-send` + timer do systemd** (`apolo setup`).
 
 ```
 apolo/
   __init__.py
   config.py            # credenciais/Bridge via env + .env (parser stdlib)
-  cli.py               # run / status / review / block / allow / rules
+  cli.py               # run / status / review / block / allow / rules / setup
   clean.py             # HTML/CSS -> texto limpo (passo 1.5)
   actions.py           # despacha a fila: move pra Trash + loga (passo 3)
   tui.py               # fila de revisão em curses (passo 3)
+  notify.py            # notify-send best-effort (passo 5)
   ai/ollama.py         # classificação do resíduo via Ollama (passo 4)
   fetch/imap.py        # conexão Bridge, busca incremental + copy/expunge
   storage/db.py        # SQLite: emails + acoes (log p/ undo) + meta
   rules/engine.py      # cascata de precedência (passo 2)
   rules/writer.py      # escrita das regras no TOML (block/allow)
   rules/config.toml    # regras editáveis à mão
+  systemd/             # templates apolo.service + apolo.timer (passo 5)
 ```
 
 Sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`, `ssl`,
-`html.parser`, `tomllib`, `curses`, `urllib`).
+`html.parser`, `tomllib`, `curses`, `urllib`); notificação via `notify-send`
+(libnotify) e agendamento via `systemd --user`.
 
 ## Limpeza de corpo (passo 1.5)
 
@@ -79,12 +83,42 @@ cp .env.example .env
 
 ```bash
 python -m apolo.cli run                  # busca, classifica e enfileira
+python -m apolo.cli run --quiet          # idem, sem notificação de desktop
 python -m apolo.cli status               # contadores e ações sugeridas
 python -m apolo.cli review               # TUI pra despachar a fila
 python -m apolo.cli rules                # lista as regras
 python -m apolo.cli block promo.x.com    # adiciona à blocklist
 python -m apolo.cli allow chefe@x.com    # adiciona à allowlist
+python -m apolo.cli setup                # instala o timer do systemd (user)
 ```
+
+## Notificações e agendamento (passo 5)
+
+Cada `run` abre uma notificação "Analisando…" e, no fim, a **substitui** pelo
+resumo da passada (`apolo/notify.py`) — fica uma só na tela em vez de empilhar:
+
+> **Apolo: 12 analisado(s)** — 8 mantido(s), 4 pra revisar · fila: 4
+
+Sem novidade o aviso vira curto e de baixa urgência (o timer roda direto, não
+vale empurrar popup à toa); com algo pra revisar, urgência normal. Tudo é
+**best-effort**: se `notify-send` faltar (headless, sem D-Bus), a triagem segue
+sem reclamar. Use `run --quiet` pra silenciar.
+
+O `apolo setup` renderiza os templates de `apolo/systemd/` (preenchendo o
+interpretador e a raiz do projeto detectados na hora) em
+`~/.config/systemd/user/`, recarrega o systemd e ativa o `apolo.timer`:
+
+```bash
+python -m apolo.cli setup                  # a cada 15min (padrão), ativa o timer
+python -m apolo.cli setup --interval 30min # outro intervalo (regrava as units)
+python -m apolo.cli setup --no-enable      # só escreve as units, não ativa
+```
+
+O serviço é `Type=oneshot` (acorda, processa o lote, morre — nada de daemon
+eterno). Logs com `journalctl --user -u apolo -f`; rodar o setup de novo é
+seguro e reentrante. O timer roda em **sessão de usuário**, então precisa do
+Bridge e do D-Bus de pé — se o Bridge estiver fora, o login IMAP falha e a
+passada aborta limpa.
 
 ## Motor de regras (passo 2)
 

@@ -1,0 +1,15 @@
+# Template renderizado por `python -m apolo.cli setup`.
+# Não edite a cópia em ~/.config/systemd/user/ na mão — rode o setup de novo.
+# As chaves {{python}}/{{workdir}} são preenchidas com o interpretador e a raiz
+# do projeto detectados na hora da instalação.
+[Unit]
+Description=Apolo — uma passada de triagem de emails
+# O Bridge precisa estar de pé; se você o roda como serviço de usuário, liste-o
+# aqui. Sem ele, o login IMAP só falha e a passada aborta limpa.
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={workdir}
+ExecStart={python} -m apolo.cli run
+# A notificação usa o D-Bus da sessão; o systemd --user já o expõe ao serviço.

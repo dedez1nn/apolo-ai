@@ -2,28 +2,42 @@
 
 `apolo run` varre e classifica; `apolo review` abre a TUI pra despachar a fila;
 `apolo block`/`allow` editam as regras pelo terminal; `apolo rules` lista o
-config; `apolo status` mostra os contadores. (undo e setup chegam depois.)
+config; `apolo status` mostra os contadores; `apolo setup` instala o timer do
+systemd. (undo chega depois.)
 """
 
 import argparse
+import os
+import shutil
+import subprocess
 import sys
 import tomllib
+from pathlib import Path
 
 from apolo.actions import dispatch
 from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import Config
 from apolo.fetch.imap import BridgeClient
+from apolo.notify import notify
 from apolo.rules.engine import RuleEngine
 from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 from apolo.tui import review_queue
 
 
-def cmd_run(config: Config) -> int:
+def cmd_run(config: Config, notify_enabled: bool = True) -> int:
     """Uma passada: busca os novos, classifica pela cascata e manda o resíduo pra IA."""
     config.require_credentials()
     engine = RuleEngine.from_file(config.rules_path)
+
+    # "Analisando…" abre a notificação; o resumo no fim a substitui (replace_id),
+    # então fica uma só na tela em vez de empilhar duas por execução.
+    nid = (
+        notify("Apolo", "Analisando emails novos…", urgency="low")
+        if notify_enabled
+        else None
+    )
 
     # A IA é opcional: se o Ollama estiver fora, o resíduo só fica em 'revisar'.
     ollama = OllamaClient(
@@ -34,6 +48,10 @@ def cmd_run(config: Config) -> int:
         print("IA indisponível (Ollama fora do ar) — resíduo fica como 'revisar'.")
 
     total_novos = 0
+    analisados = 0  # todos os emails percorridos nesta passada (pro resumo)
+    revisar = 0  # foram pra fila (aguardando)
+    mantidos = 0  # terminaram como 'classificado' (sem ação)
+    fila_total = 0
     acoes: dict[str, int] = {}
     with Storage(config.db_path) as store:
         with BridgeClient(
@@ -77,6 +95,11 @@ def cmd_run(config: Config) -> int:
                     novo_status = (
                         STATUS_AGUARDANDO if decisao.precisa_revisao else STATUS_CLASSIFICADO
                     )
+                    analisados += 1
+                    if novo_status == STATUS_AGUARDANDO:
+                        revisar += 1
+                    else:
+                        mantidos += 1
                     store.classify_email(
                         pasta=pasta,
                         uidvalidity=result.uidvalidity,
@@ -100,11 +123,44 @@ def cmd_run(config: Config) -> int:
                 total_novos += novos_pasta
                 print(f"[{pasta}] {novos_pasta} novo(s) (UID até {result.ultimo_uid}).")
 
+        fila_total = store.count_queue()
+
     print(f"\n{total_novos} email(s) novo(s).")
     if acoes:
         resumo = ", ".join(f"{n} {acao}" for acao, n in sorted(acoes.items()))
         print(f"Sugestões da cascata: {resumo}.")
+
+    if notify_enabled:
+        _notify_resumo(analisados, mantidos, revisar, fila_total, replace_id=nid)
     return 0
+
+
+def _notify_resumo(
+    analisados: int, mantidos: int, revisar: int, fila_total: int, *, replace_id: int | None
+) -> None:
+    """Substitui a notificação de "analisando…" pelo resumo da passada.
+
+    Sem novidade vira um aviso curto e de baixa urgência (o timer roda direto,
+    não vale empurrar popup chamativo à toa). Com algo pra revisar, urgência
+    normal pra puxar o olho.
+    """
+    if analisados == 0:
+        notify(
+            "Apolo: nada novo",
+            f"Fila de revisão: {fila_total}.",
+            urgency="low",
+            expire_ms=4000,
+            replace_id=replace_id,
+        )
+        return
+    titulo = f"Apolo: {analisados} analisado(s)"
+    corpo = f"{mantidos} mantido(s), {revisar} pra revisar · fila: {fila_total}."
+    notify(
+        titulo,
+        corpo,
+        urgency="normal" if revisar else "low",
+        replace_id=replace_id,
+    )
 
 
 def _ai_pass(client, store, ollama, pasta, uidvalidity, residuo) -> int:
@@ -244,13 +300,61 @@ def cmd_rules(config: Config) -> int:
     return 0
 
 
+_SYSTEMD_TEMPLATE_DIR = Path(__file__).resolve().parent / "systemd"
+_USER_UNIT_DIR = Path(os.path.expanduser("~/.config/systemd/user"))
+
+
+def cmd_setup(config: Config, interval: str, enable: bool = True) -> int:
+    """Renderiza as units do systemd (user) e ativa o timer.
+
+    Detecta o interpretador e a raiz do projeto na hora, então a instalação não
+    depende de venv nem de caminho chumbado. Reentrante: rodar de novo regrava as
+    units (útil pra trocar o intervalo) e recarrega o systemd.
+    """
+    workdir = Path(__file__).resolve().parent.parent  # raiz do projeto
+    fields = {"python": sys.executable, "workdir": str(workdir), "interval": interval}
+
+    _USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
+    for nome in ("apolo.service", "apolo.timer"):
+        template = (_SYSTEMD_TEMPLATE_DIR / nome).read_text(encoding="utf-8")
+        destino = _USER_UNIT_DIR / nome
+        destino.write_text(template.format(**fields), encoding="utf-8")
+        print(f"escrito: {destino}")
+
+    if shutil.which("systemctl") is None:
+        print("systemctl não encontrado — units escritas, mas não ativadas.")
+        return 0
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    if enable:
+        subprocess.run(
+            ["systemctl", "--user", "enable", "--now", "apolo.timer"], check=False
+        )
+        print(f"timer ativado (a cada {interval}). Status: systemctl --user status apolo.timer")
+    else:
+        print("units escritas. Ative com: systemctl --user enable --now apolo.timer")
+    print("Logs: journalctl --user -u apolo -f")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="apolo", description="Triador pessoal de emails.")
     sub = parser.add_subparsers(dest="comando", required=True)
-    sub.add_parser("run", help="dispara uma passada (fetch incremental + classifica).")
+    p_run = sub.add_parser("run", help="dispara uma passada (fetch incremental + classifica).")
+    p_run.add_argument(
+        "-q", "--quiet", action="store_true", help="não envia notificações de desktop."
+    )
     sub.add_parser("status", help="última execução, contadores.")
     sub.add_parser("review", help="abre a TUI pra despachar a fila de revisão.")
     sub.add_parser("rules", help="lista as regras configuradas.")
+
+    p_setup = sub.add_parser("setup", help="instala/atualiza o timer do systemd (user).")
+    p_setup.add_argument(
+        "--interval", default="15min", help="frequência do timer (ex.: 15min, 1h). Padrão 15min."
+    )
+    p_setup.add_argument(
+        "--no-enable", action="store_true", help="escreve as units sem ativar o timer."
+    )
 
     p_block = sub.add_parser("block", help="adiciona remetente/domínio à blocklist.")
     p_block.add_argument("valor", help="email ou domínio (ex.: promo.x.com).")
@@ -269,9 +373,11 @@ def main(argv: list[str] | None = None) -> int:
     config = Config.load()
     try:
         if args.comando == "run":
-            return cmd_run(config)
+            return cmd_run(config, notify_enabled=not args.quiet)
         if args.comando == "status":
             return cmd_status(config)
+        if args.comando == "setup":
+            return cmd_setup(config, args.interval, enable=not args.no_enable)
         if args.comando == "review":
             return cmd_review(config)
         if args.comando == "rules":

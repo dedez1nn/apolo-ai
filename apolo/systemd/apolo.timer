@@ -1,0 +1,14 @@
+# Template renderizado por `python -m apolo.cli setup`.
+# A chave {{interval}} vem de --interval (padrão 15min).
+[Unit]
+Description=Apolo — dispara a triagem de emails periodicamente
+
+[Timer]
+# Primeira passada pouco depois do login, depois a cada intervalo.
+OnBootSec=2min
+OnUnitActiveSec={interval}
+# Persistent: se a máquina estava desligada na hora prevista, roda ao voltar.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
