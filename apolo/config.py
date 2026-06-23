@@ -36,6 +36,11 @@ def _default_db_path() -> Path:
     return Path(base) / "apolo" / "apolo.db"
 
 
+def _default_rules_path() -> Path:
+    """As regras vivem junto do pacote, em apolo/rules/config.toml."""
+    return Path(__file__).resolve().parent / "rules" / "config.toml"
+
+
 @dataclass(frozen=True)
 class Config:
     imap_host: str = "127.0.0.1"
@@ -45,6 +50,7 @@ class Config:
     # "STARTTLS" (padrão do Bridge em 1143) ou "PLAIN".
     imap_security: str = "STARTTLS"
     db_path: Path = field(default_factory=_default_db_path)
+    rules_path: Path = field(default_factory=_default_rules_path)
     # Pastas IMAP a vigiar; "INBOX" basta pro passo 1.
     folders: tuple[str, ...] = ("INBOX",)
 
@@ -61,6 +67,13 @@ class Config:
             Path(os.path.expanduser(db_path_str)) if db_path_str else _default_db_path()
         )
 
+        rules_path_str = get("APOLO_RULES_PATH")
+        rules_path = (
+            Path(os.path.expanduser(rules_path_str))
+            if rules_path_str
+            else _default_rules_path()
+        )
+
         folders_str = get("APOLO_FOLDERS", "INBOX")
         folders = tuple(f.strip() for f in folders_str.split(",") if f.strip())
 
@@ -71,6 +84,7 @@ class Config:
             password=get("APOLO_PASSWORD"),
             imap_security=get("APOLO_IMAP_SECURITY", "STARTTLS").upper(),
             db_path=db_path,
+            rules_path=rules_path,
             folders=folders or ("INBOX",),
         )
 

@@ -173,11 +173,50 @@ class Storage:
             )
             return cur.rowcount > 0
 
+    def classify_email(
+        self,
+        *,
+        pasta: str,
+        uidvalidity: int,
+        uid: int,
+        status: str,
+        categoria: str,
+        acao_sugerida: str,
+        regra_casada: str,
+    ) -> None:
+        """Grava o resultado da cascata de regras num email já existente."""
+        with self._tx() as conn:
+            conn.execute(
+                """
+                UPDATE emails
+                   SET status = ?, categoria = ?, acao_sugerida = ?,
+                       regra_casada = ?, processado_em = ?
+                 WHERE pasta = ? AND uidvalidity = ? AND uid = ?
+                """,
+                (
+                    status,
+                    categoria,
+                    acao_sugerida,
+                    regra_casada,
+                    _now(),
+                    pasta,
+                    uidvalidity,
+                    uid,
+                ),
+            )
+
     def status_counts(self) -> dict[str, int]:
         rows = self.conn.execute(
             "SELECT status, COUNT(*) AS n FROM emails GROUP BY status"
         ).fetchall()
         return {row["status"]: row["n"] for row in rows}
+
+    def acao_counts(self) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT acao_sugerida, COUNT(*) AS n FROM emails "
+            "WHERE acao_sugerida IS NOT NULL GROUP BY acao_sugerida"
+        ).fetchall()
+        return {row["acao_sugerida"]: row["n"] for row in rows}
 
     def last_processed_at(self) -> str | None:
         row = self.conn.execute(

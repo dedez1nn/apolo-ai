@@ -6,23 +6,25 @@ pessoal, na própria máquina — lê o Proton Mail via **Proton Bridge** (IMAP 
 
 A arquitetura completa e os princípios de design estão em [`apolo.md`](apolo.md).
 
-## Estado atual — passo 1 (+1.5) do roadmap
+## Estado atual — passos 1, 1.5 e 2 do roadmap
 
-Implementado o **backbone**: fetch incremental por UID + esquema SQLite, mais a
-limpeza de corpo HTML/CSS.
+Implementado o **backbone** (fetch incremental + SQLite), a **limpeza de corpo
+HTML/CSS** e o **motor de regras determinístico**.
 
 ```
 apolo/
   __init__.py
-  config.py          # credenciais/Bridge via env + .env (parser stdlib)
-  cli.py             # apolo run / apolo status
-  clean.py           # HTML/CSS -> texto limpo (passo 1.5)
-  fetch/imap.py      # conexão Bridge, busca incremental por UID (BODY.PEEK)
-  storage/db.py      # SQLite: emails + acoes (log p/ undo) + meta
+  config.py            # credenciais/Bridge via env + .env (parser stdlib)
+  cli.py               # apolo run / apolo status
+  clean.py             # HTML/CSS -> texto limpo (passo 1.5)
+  fetch/imap.py        # conexão Bridge, busca incremental por UID (BODY.PEEK)
+  storage/db.py        # SQLite: emails + acoes (log p/ undo) + meta
+  rules/engine.py      # cascata de precedência (passo 2)
+  rules/config.toml    # regras editáveis à mão
 ```
 
 Sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`, `ssl`,
-`html.parser`).
+`html.parser`, `tomllib`).
 
 ## Limpeza de corpo (passo 1.5)
 
@@ -65,9 +67,29 @@ cp .env.example .env
 ## Uso
 
 ```bash
-python -m apolo.cli run      # uma passada: busca UIDs novos e grava como 'novo'
-python -m apolo.cli status   # última execução e contadores por status
+python -m apolo.cli run      # busca UIDs novos, classifica pela cascata e grava
+python -m apolo.cli status   # última execução, contadores e ações sugeridas
 ```
+
+## Motor de regras (passo 2)
+
+A cada email novo a cascata avalia de cima pra baixo e a **primeira regra que
+casar decide** (`apolo/rules/engine.py`), tudo sem IA:
+
+1. **allowlist** (remetente/domínio confiável) → mantém, nunca é tocado.
+2. **blocklist** (ruído conhecido) → sugere lixeira.
+3. **`List-Unsubscribe`** → newsletter/marketing, ação conforme o config.
+4. **palavras-chave** no assunto/remetente → ação por grupo.
+5. *(IA — passo 4, ainda não)*
+6. **default** → sem confiança, vai pra fila de revisão.
+
+Domínio casa subdomínio (`loja-exemplo.com.br` pega `promo.loja-exemplo.com.br`). As regras
+ficam num TOML editável à mão — `apolo/rules/config.toml` (ou aponte outro com
+`APOLO_RULES_PATH`). "Adicionar uma fonte" = adicionar uma linha lá.
+
+**Tudo começa em modo sugestão.** No passo 2 nada é apagado: `manter` é decisão
+terminal e o resto entra na fila de revisão (`aguardando`) com a ação sugerida.
+A execução automática só chega quando uma regra for promovida (passo 6).
 
 ## Como funciona o fetch incremental
 
@@ -81,7 +103,6 @@ python -m apolo.cli status   # última execução e contadores por status
 
 ## Próximos passos (roadmap)
 
-2. Motor de regras: allowlist/blocklist/`List-Unsubscribe` (TOML editável à mão).
 3. TUI de revisão + `apolo block`/`apolo allow`.
 4. Camada Ollama pro resíduo.
 5. `notify-send` + systemd timer.

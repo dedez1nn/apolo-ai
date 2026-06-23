@@ -1,0 +1,51 @@
+# Regras do Apolo — editável à mão.
+#
+# A cascata avalia de cima pra baixo e a PRIMEIRA regra que casar decide:
+#   1. allowlist          -> manter (passa sempre, nunca é tocado)
+#   2. blocklist          -> lixeira (ruído conhecido)
+#   3. List-Unsubscribe   -> conforme [unsubscribe].acao (newsletter/marketing)
+#   4. keywords           -> conforme cada grupo
+#   5. (IA — passo 4, ainda não)
+#   6. default            -> revisar (sem confiança, vai pra fila)
+#
+# Lembrete: no passo 2 tudo é SUGESTÃO. Nada é apagado automaticamente; o que
+# casa "lixeira" entra na fila de revisão com a ação sugerida. A execução
+# automática só chega quando uma regra for promovida (passo 6).
+#
+# "Adicionar uma fonte" = adicionar uma linha aqui. Domínio casa subdomínio
+# (ex.: "loja-exemplo.com.br" pega "promo.loja-exemplo.com.br").
+
+[allowlist]
+remetentes = [
+  # "chefe@empresa.com",
+]
+dominios = [
+  #  #]
+
+[blocklist]
+remetentes = [
+]
+dominios = [
+  # "promo.loja-exemplo.com.br",
+]
+
+[unsubscribe]
+# Emails com header List-Unsubscribe são quase sempre newsletter/marketing.
+ativo = true
+acao = "lixeira"   # "lixeira" ou "revisar"
+
+# Grupos de palavra-chave (substring, sem diferenciar maiúsculas/acento opcional).
+# campo: "assunto" | "remetente" | "ambos"
+# acao:  "lixeira" | "revisar" | "manter"
+
+[[keywords]]
+nome = "promo"
+campo = "ambos"
+acao = "lixeira"
+padroes = ["promoção", "promocao", "oferta", "desconto", "off", "black friday", "cupom"]
+
+[[keywords]]
+nome = "newsletter"
+campo = "assunto"
+acao = "revisar"
+padroes = ["newsletter", "novidades", "resumo da semana"]

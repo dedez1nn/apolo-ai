@@ -25,6 +25,7 @@ class FetchedEmail:
     remetente: str
     assunto: str
     data: str
+    list_unsubscribe: str  # header (vazio se ausente) — usado pelo motor de regras
 
 
 @dataclass(frozen=True)
@@ -152,7 +153,7 @@ class BridgeClient:
         typ, data = self._imap.uid(
             "fetch",
             str(uid),
-            "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])",
+            "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID LIST-UNSUBSCRIBE)])",
         )
         if typ != "OK" or not data or not isinstance(data[0], tuple):
             return None
@@ -165,4 +166,6 @@ class BridgeClient:
             remetente=_decode_str(msg.get("From")),
             assunto=_decode_str(msg.get("Subject")),
             data=msg.get("Date", ""),
+            # str() porque headers com codificação atípica podem vir como Header.
+            list_unsubscribe=str(msg.get("List-Unsubscribe") or ""),
         )

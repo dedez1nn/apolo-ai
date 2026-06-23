@@ -1,7 +1,7 @@
 """Entrada única do Apolo.
 
-Passo 1 do roadmap entrega o backbone: `apolo run` faz a varredura incremental
-e grava os novos como 'novo'; `apolo status` mostra os contadores. Os demais
+`apolo run` faz a varredura incremental, passa cada email novo pela cascata de
+regras e grava a ação sugerida; `apolo status` mostra os contadores. Os demais
 comandos (review, block/allow, rules, undo, setup) chegam nos passos seguintes.
 """
 
@@ -10,14 +10,17 @@ import sys
 
 from apolo.config import Config
 from apolo.fetch.imap import BridgeClient
-from apolo.storage.db import Storage
+from apolo.rules.engine import RuleEngine
+from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 
 
 def cmd_run(config: Config) -> int:
-    """Uma passada: busca os UIDs novos de cada pasta e grava como 'novo'."""
+    """Uma passada: busca os UIDs novos, classifica pela cascata e grava."""
     config.require_credentials()
+    engine = RuleEngine.from_file(config.rules_path)
 
     total_novos = 0
+    acoes: dict[str, int] = {}
     with Storage(config.db_path) as store:
         with BridgeClient(
             config.imap_host, config.imap_port, config.imap_security
@@ -49,11 +52,35 @@ def cmd_run(config: Config) -> int:
                     ):
                         novos_pasta += 1
 
+                    # Cascata determinística (sem IA). Tudo é sugestão: 'manter'
+                    # é terminal; o resto entra na fila de revisão (aguardando).
+                    decisao = engine.classify(
+                        remetente=m.remetente,
+                        assunto=m.assunto,
+                        list_unsubscribe=m.list_unsubscribe,
+                    )
+                    novo_status = (
+                        STATUS_AGUARDANDO if decisao.precisa_revisao else STATUS_CLASSIFICADO
+                    )
+                    store.classify_email(
+                        pasta=pasta,
+                        uidvalidity=result.uidvalidity,
+                        uid=m.uid,
+                        status=novo_status,
+                        categoria=decisao.categoria,
+                        acao_sugerida=decisao.acao_sugerida,
+                        regra_casada=decisao.regra_casada,
+                    )
+                    acoes[decisao.acao_sugerida] = acoes.get(decisao.acao_sugerida, 0) + 1
+
                 store.set_folder_meta(pasta, result.uidvalidity, result.ultimo_uid)
                 total_novos += novos_pasta
                 print(f"[{pasta}] {novos_pasta} novo(s) (UID até {result.ultimo_uid}).")
 
-    print(f"\n{total_novos} email(s) novo(s) armazenado(s).")
+    print(f"\n{total_novos} email(s) novo(s).")
+    if acoes:
+        resumo = ", ".join(f"{n} {acao}" for acao, n in sorted(acoes.items()))
+        print(f"Sugestões desta passada: {resumo}.")
     return 0
 
 
@@ -62,8 +89,10 @@ def cmd_status(config: Config) -> int:
     with Storage(config.db_path) as store:
         ultima = store.last_processed_at()
         counts = store.status_counts()
+        acoes = store.acao_counts()
 
     print(f"Banco:           {config.db_path}")
+    print(f"Regras:          {config.rules_path}")
     print(f"Última execução: {ultima or '(nunca)'}")
     if not counts:
         print("Nenhum email registrado ainda.")
@@ -72,6 +101,10 @@ def cmd_status(config: Config) -> int:
     for status, n in sorted(counts.items()):
         print(f"  {status:<14} {n}")
     print(f"  {'total':<14} {sum(counts.values())}")
+    if acoes:
+        print("Ação sugerida:")
+        for acao, n in sorted(acoes.items()):
+            print(f"  {acao:<14} {n}")
     return 0
 
 
