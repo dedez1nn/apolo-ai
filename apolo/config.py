@@ -53,6 +53,8 @@ class Config:
     rules_path: Path = field(default_factory=_default_rules_path)
     # Pastas IMAP a vigiar; "INBOX" basta pro passo 1.
     folders: tuple[str, ...] = ("INBOX",)
+    # Pasta de lixeira do Proton (atributo \Trash no Bridge).
+    trash_folder: str = "Trash"
 
     @classmethod
     def load(cls) -> "Config":
@@ -86,6 +88,7 @@ class Config:
             db_path=db_path,
             rules_path=rules_path,
             folders=folders or ("INBOX",),
+            trash_folder=get("APOLO_TRASH_FOLDER", "Trash"),
         )
 
     def require_credentials(self) -> None:

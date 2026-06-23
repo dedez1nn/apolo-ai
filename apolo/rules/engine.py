@@ -39,7 +39,7 @@ class Decision:
         return self.acao_sugerida != ACAO_MANTER
 
 
-def _email_e_dominio(remetente: str) -> tuple[str, str]:
+def parse_sender(remetente: str) -> tuple[str, str]:
     """De '\"KaBuM\" <x@promo.loja-exemplo.com.br>' tira ('x@promo.loja-exemplo.com.br', 'promo.loja-exemplo.com.br')."""
     addr = parseaddr(remetente)[1].lower().strip()
     dominio = addr.rsplit("@", 1)[-1] if "@" in addr else ""
@@ -86,7 +86,7 @@ class RuleEngine:
             return cls(tomllib.load(f))
 
     def classify(self, *, remetente: str, assunto: str, list_unsubscribe: str = "") -> Decision:
-        addr, dominio = _email_e_dominio(remetente)
+        addr, dominio = parse_sender(remetente)
 
         # 1. allowlist — passa sempre, nunca é tocado.
         if addr and addr in self._allow_remetentes:

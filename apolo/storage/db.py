@@ -224,6 +224,40 @@ class Storage:
         ).fetchone()
         return row["m"] if row else None
 
+    # ----- fila de revisão (TUI) -----
+    def fetch_queue(self) -> list[sqlite3.Row]:
+        """Emails aguardando revisão, mais recentes primeiro."""
+        return self.conn.execute(
+            """
+            SELECT pasta, uidvalidity, uid, message_id, remetente, assunto,
+                   data, categoria, acao_sugerida, regra_casada
+              FROM emails
+             WHERE status = ?
+             ORDER BY pasta, uid DESC
+            """,
+            (STATUS_AGUARDANDO,),
+        ).fetchall()
+
+    def count_queue(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM emails WHERE status = ?", (STATUS_AGUARDANDO,)
+        ).fetchone()
+        return row["n"] if row else 0
+
+    def mark_dispatched(
+        self, *, pasta: str, uidvalidity: int, uid: int, acao_aplicada: str
+    ) -> None:
+        """Email saiu da fila: registra a ação efetivamente aplicada."""
+        with self._tx() as conn:
+            conn.execute(
+                """
+                UPDATE emails
+                   SET status = ?, acao_aplicada = ?, processado_em = ?
+                 WHERE pasta = ? AND uidvalidity = ? AND uid = ?
+                """,
+                (STATUS_DESPACHADO, acao_aplicada, _now(), pasta, uidvalidity, uid),
+            )
+
     # ----- log de ações (sustenta o undo, passo 6) -----
     def log_action(
         self,

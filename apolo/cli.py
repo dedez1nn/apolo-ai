@@ -1,17 +1,21 @@
 """Entrada única do Apolo.
 
-`apolo run` faz a varredura incremental, passa cada email novo pela cascata de
-regras e grava a ação sugerida; `apolo status` mostra os contadores. Os demais
-comandos (review, block/allow, rules, undo, setup) chegam nos passos seguintes.
+`apolo run` varre e classifica; `apolo review` abre a TUI pra despachar a fila;
+`apolo block`/`allow` editam as regras pelo terminal; `apolo rules` lista o
+config; `apolo status` mostra os contadores. (undo e setup chegam depois.)
 """
 
 import argparse
 import sys
+import tomllib
 
+from apolo.actions import dispatch
 from apolo.config import Config
 from apolo.fetch.imap import BridgeClient
 from apolo.rules.engine import RuleEngine
+from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
+from apolo.tui import review_queue
 
 
 def cmd_run(config: Config) -> int:
@@ -108,11 +112,105 @@ def cmd_status(config: Config) -> int:
     return 0
 
 
+def cmd_review(config: Config) -> int:
+    """Abre a TUI pra despachar a fila; aplica as ações via IMAP ao sair."""
+    with Storage(config.db_path) as store:
+        rows = store.fetch_queue()
+        if not rows:
+            print("Fila vazia — nada pra revisar.")
+            return 0
+
+        itens = review_queue(rows, config.rules_path)
+        if not itens:
+            print("Nada despachado.")
+            return 0
+
+        precisa_imap = any(i.acao == "lixeira" for i in itens)
+        if precisa_imap:
+            config.require_credentials()
+            with BridgeClient(
+                config.imap_host, config.imap_port, config.imap_security
+            ) as client:
+                client.login(config.username, config.password)
+                res = dispatch(client, store, itens, trash_folder=config.trash_folder)
+        else:
+            res = dispatch(_NoClient(), store, itens, trash_folder=config.trash_folder)
+
+    print(f"Despachado: {res.lixeira} pra lixeira, {res.mantidos} mantido(s).")
+    return 0
+
+
+class _NoClient:
+    """Sentinela: usado quando nenhum item vai pra lixeira (sem IMAP)."""
+
+    def copy_to(self, *a, **k):  # pragma: no cover - nunca chamado
+        raise AssertionError("dispatch sem IMAP não deveria mover emails")
+
+    def expunge(self, *a, **k):  # pragma: no cover
+        raise AssertionError("dispatch sem IMAP não deveria expurgar")
+
+
+def _cmd_rule(config: Config, lista: str, valor: str, tipo: str | None) -> int:
+    tipo = tipo or detect_tipo(valor)
+    status = add_rule_entry(config.rules_path, lista=lista, tipo=tipo, valor=valor)
+    verbo = "já estava em" if status == "exists" else "adicionado a"
+    print(f"{tipo} {valor!r} {verbo} {lista} ({config.rules_path}).")
+    return 0
+
+
+def cmd_block(config: Config, valor: str, tipo: str | None) -> int:
+    return _cmd_rule(config, "blocklist", valor, tipo)
+
+
+def cmd_allow(config: Config, valor: str, tipo: str | None) -> int:
+    return _cmd_rule(config, "allowlist", valor, tipo)
+
+
+def cmd_rules(config: Config) -> int:
+    """Lista o que está configurado no TOML."""
+    path = config.rules_path
+    print(f"Regras: {path}")
+    if not path.is_file():
+        print("(arquivo de regras ainda não existe)")
+        return 0
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+
+    for lista in ("allowlist", "blocklist"):
+        secao = data.get(lista, {}) or {}
+        rem = secao.get("remetentes", []) or []
+        dom = secao.get("dominios", []) or []
+        print(f"\n[{lista}]  {len(rem)} remetente(s), {len(dom)} domínio(s)")
+        for x in rem + dom:
+            print(f"  - {x}")
+
+    unsub = data.get("unsubscribe", {}) or {}
+    print(f"\n[unsubscribe] ativo={unsub.get('ativo', False)} acao={unsub.get('acao', '-')}")
+
+    keywords = data.get("keywords", []) or []
+    print(f"\n[keywords] {len(keywords)} grupo(s)")
+    for g in keywords:
+        print(f"  - {g.get('nome')}: {g.get('acao')} (campo={g.get('campo')}) {g.get('padroes')}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="apolo", description="Triador pessoal de emails.")
     sub = parser.add_subparsers(dest="comando", required=True)
-    sub.add_parser("run", help="dispara uma passada (fetch incremental + grava).")
+    sub.add_parser("run", help="dispara uma passada (fetch incremental + classifica).")
     sub.add_parser("status", help="última execução, contadores.")
+    sub.add_parser("review", help="abre a TUI pra despachar a fila de revisão.")
+    sub.add_parser("rules", help="lista as regras configuradas.")
+
+    p_block = sub.add_parser("block", help="adiciona remetente/domínio à blocklist.")
+    p_block.add_argument("valor", help="email ou domínio (ex.: promo.x.com).")
+    p_allow = sub.add_parser("allow", help="adiciona remetente/domínio à allowlist.")
+    p_allow.add_argument("valor", help="email ou domínio (ex.: chefe@x.com).")
+    for p in (p_block, p_allow):
+        grupo = p.add_mutually_exclusive_group()
+        grupo.add_argument("--dominio", action="store_const", const="dominio", dest="tipo")
+        grupo.add_argument("--remetente", action="store_const", const="remetente", dest="tipo")
+        p.set_defaults(tipo=None)
     return parser
 
 
@@ -124,6 +222,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_run(config)
         if args.comando == "status":
             return cmd_status(config)
+        if args.comando == "review":
+            return cmd_review(config)
+        if args.comando == "rules":
+            return cmd_rules(config)
+        if args.comando == "block":
+            return cmd_block(config, args.valor, args.tipo)
+        if args.comando == "allow":
+            return cmd_allow(config, args.valor, args.tipo)
     except Exception as e:
         print(f"erro: {e}", file=sys.stderr)
         return 1

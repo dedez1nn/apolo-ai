@@ -85,6 +85,31 @@ class BridgeClient:
         assert self._imap is not None
         self._imap.login(username, password)
 
+    def copy_to(self, pasta: str, uid: int, destino: str) -> None:
+        """Seleciona a pasta (rw) e copia o UID pra `destino`, marcando \\Deleted.
+
+        O Bridge não anuncia MOVE, então a remoção é COPY + \\Deleted; o EXPUNGE
+        fica pra expunge() (uma vez por pasta). Mover pra Trash é reversível.
+        """
+        assert self._imap is not None
+        typ, _ = self._imap.select(pasta, readonly=False)
+        if typ != "OK":
+            raise RuntimeError(f"não consegui selecionar {pasta!r} pra escrita")
+        typ, _ = self._imap.uid("COPY", str(uid), destino)
+        if typ != "OK":
+            raise RuntimeError(f"COPY do UID {uid} pra {destino!r} falhou")
+        typ, _ = self._imap.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
+        if typ != "OK":
+            raise RuntimeError(f"STORE \\Deleted no UID {uid} falhou")
+
+    def expunge(self, pasta: str) -> None:
+        """EXPUNGE na pasta — efetiva a remoção dos marcados \\Deleted."""
+        assert self._imap is not None
+        typ, _ = self._imap.select(pasta, readonly=False)
+        if typ != "OK":
+            raise RuntimeError(f"não consegui selecionar {pasta!r} pra expunge")
+        self._imap.expunge()
+
     def _select_readonly(self, pasta: str) -> int:
         """Seleciona a pasta em modo readonly e devolve o UIDVALIDITY."""
         assert self._imap is not None

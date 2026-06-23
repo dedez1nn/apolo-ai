@@ -6,25 +6,29 @@ pessoal, na própria máquina — lê o Proton Mail via **Proton Bridge** (IMAP 
 
 A arquitetura completa e os princípios de design estão em [`apolo.md`](apolo.md).
 
-## Estado atual — passos 1, 1.5 e 2 do roadmap
+## Estado atual — passos 1, 1.5, 2 e 3 do roadmap
 
 Implementado o **backbone** (fetch incremental + SQLite), a **limpeza de corpo
-HTML/CSS** e o **motor de regras determinístico**.
+HTML/CSS**, o **motor de regras determinístico** e a **fila de revisão (TUI)**
+com `block`/`allow` de terminal.
 
 ```
 apolo/
   __init__.py
   config.py            # credenciais/Bridge via env + .env (parser stdlib)
-  cli.py               # apolo run / apolo status
+  cli.py               # run / status / review / block / allow / rules
   clean.py             # HTML/CSS -> texto limpo (passo 1.5)
-  fetch/imap.py        # conexão Bridge, busca incremental por UID (BODY.PEEK)
+  actions.py           # despacha a fila: move pra Trash + loga (passo 3)
+  tui.py               # fila de revisão em curses (passo 3)
+  fetch/imap.py        # conexão Bridge, busca incremental + copy/expunge
   storage/db.py        # SQLite: emails + acoes (log p/ undo) + meta
   rules/engine.py      # cascata de precedência (passo 2)
+  rules/writer.py      # escrita das regras no TOML (block/allow)
   rules/config.toml    # regras editáveis à mão
 ```
 
 Sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`, `ssl`,
-`html.parser`, `tomllib`).
+`html.parser`, `tomllib`, `curses`).
 
 ## Limpeza de corpo (passo 1.5)
 
@@ -63,12 +67,18 @@ cp .env.example .env
 | `APOLO_IMAP_SECURITY` | `STARTTLS`                      | `STARTTLS` ou `PLAIN`                  |
 | `APOLO_FOLDERS`       | `INBOX`                         | pastas a vigiar (separadas por vírgula)|
 | `APOLO_DB_PATH`       | `~/.local/share/apolo/apolo.db` | caminho do banco de estado             |
+| `APOLO_RULES_PATH`    | `apolo/rules/config.toml`       | arquivo de regras                      |
+| `APOLO_TRASH_FOLDER`  | `Trash`                         | pasta de lixeira do Proton             |
 
 ## Uso
 
 ```bash
-python -m apolo.cli run      # busca UIDs novos, classifica pela cascata e grava
-python -m apolo.cli status   # última execução, contadores e ações sugeridas
+python -m apolo.cli run                  # busca, classifica e enfileira
+python -m apolo.cli status               # contadores e ações sugeridas
+python -m apolo.cli review               # TUI pra despachar a fila
+python -m apolo.cli rules                # lista as regras
+python -m apolo.cli block promo.x.com    # adiciona à blocklist
+python -m apolo.cli allow chefe@x.com    # adiciona à allowlist
 ```
 
 ## Motor de regras (passo 2)
@@ -87,9 +97,32 @@ Domínio casa subdomínio (`loja-exemplo.com.br` pega `promo.loja-exemplo.com.br
 ficam num TOML editável à mão — `apolo/rules/config.toml` (ou aponte outro com
 `APOLO_RULES_PATH`). "Adicionar uma fonte" = adicionar uma linha lá.
 
-**Tudo começa em modo sugestão.** No passo 2 nada é apagado: `manter` é decisão
+**Tudo começa em modo sugestão.** Nada é apagado pela cascata: `manter` é decisão
 terminal e o resto entra na fila de revisão (`aguardando`) com a ação sugerida.
-A execução automática só chega quando uma regra for promovida (passo 6).
+A execução automática (sem o dono) só chega quando uma regra for promovida (passo 6).
+
+## Fila de revisão (passo 3)
+
+`apolo review` abre uma TUI em curses com a fila (`aguardando`):
+
+```
+↑/↓ mover   d lixeira   m manter   b block   a allow   enter despachar   q sair
+```
+
+Cada email já vem com a ação sugerida pela cascata; você confirma ou troca.
+`b`/`a` são o **loop de aprendizado**: gravam o domínio do remetente na
+block/allowlist na hora (via `apolo/rules/writer.py`, que preserva os comentários
+do TOML e valida antes de salvar) e ajustam a ação do item.
+
+Ao apertar **enter**, a TUI fecha e o dispatch aplica as decisões: itens `manter`
+só saem da fila; itens `lixeira` são movidos pra Trash. Como o Bridge não tem
+`MOVE`, a remoção é `COPY` pra Trash + `\Deleted` + `EXPUNGE` — **reversível**,
+já que a mensagem fica na Trash, e cada remoção é registrada na tabela `acoes`
+com dado pra reverter (base do `apolo undo`, passo 6). Itens deixados em `revisar`
+permanecem na fila pra próxima.
+
+Mover pra lixeira aqui é sempre **manual** (você despacha). A execução sem o dono
+fica pro passo 6.
 
 ## Como funciona o fetch incremental
 
@@ -103,7 +136,6 @@ A execução automática só chega quando uma regra for promovida (passo 6).
 
 ## Próximos passos (roadmap)
 
-3. TUI de revisão + `apolo block`/`apolo allow`.
 4. Camada Ollama pro resíduo.
 5. `notify-send` + systemd timer.
 6. Promoção de regra pra automático + `apolo undo`.
