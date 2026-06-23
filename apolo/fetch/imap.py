@@ -56,14 +56,17 @@ def _decode_str(value: str | None) -> str:
 class BridgeClient:
     """Conexão com o Proton Bridge. Use como context manager."""
 
-    def __init__(self, host: str, port: int, security: str = "STARTTLS"):
+    def __init__(self, host: str, port: int, security: str = "STARTTLS", timeout: float = 30.0):
         self.host = host
         self.port = port
         self.security = security.upper()
+        # Sem timeout, um Bridge travado/rate-limited pendura login/copy/expunge
+        # pra sempre — e o terminal "congela". Com timeout, falha limpa.
+        self.timeout = timeout
         self._imap: imaplib.IMAP4 | None = None
 
     def __enter__(self) -> "BridgeClient":
-        self._imap = imaplib.IMAP4(self.host, self.port)
+        self._imap = imaplib.IMAP4(self.host, self.port, timeout=self.timeout)
         if self.security == "STARTTLS":
             # O Bridge usa um cert self-signed em loopback; não dá pra verificar
             # contra uma CA e não faz sentido em 127.0.0.1. Conexão local.
