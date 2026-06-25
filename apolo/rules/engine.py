@@ -3,7 +3,7 @@
 Precedência fixa; a PRIMEIRA regra que casar decide (apolo.md):
   1. allowlist        -> manter (rede de segurança contra falso positivo)
   2. blocklist        -> lixeira
-  3. List-Unsubscribe -> conforme config (newsletter/marketing)
+  3. List-Unsubscribe + termo de marketing (2 sinais) -> conforme config
   4. keywords         -> conforme cada grupo
   5. (IA, passo 4 — não entra aqui)
   6. default          -> revisar
@@ -23,6 +23,14 @@ ACAO_LIXEIRA = "lixeira"
 ACAO_REVISAR = "revisar"
 
 _ACOES_VALIDAS = {ACAO_MANTER, ACAO_LIXEIRA, ACAO_REVISAR}
+
+# 2º sinal exigido pela regra do List-Unsubscribe (ver classify). Usado quando o
+# TOML não traz [unsubscribe].exige — instalações antigas ganham o comportamento
+# novo sem precisar editar o config.
+_UNSUB_EXIGE_PADRAO = [
+    "oferta", "promoção", "promocao", "desconto", "off", "cupom", "black friday",
+    "newsletter", "novidades", "sale", "deal",
+]
 
 
 @dataclass(frozen=True)
@@ -64,6 +72,11 @@ class RuleEngine:
         unsub = rules.get("unsubscribe", {}) or {}
         self._unsub_ativo = bool(unsub.get("ativo", False))
         self._unsub_acao = _valida_acao(unsub.get("acao", ACAO_REVISAR), "unsubscribe")
+        # Chave ausente -> default (2 sinais). Lista vazia explícita -> header sozinho.
+        exige_raw = unsub.get("exige")
+        if exige_raw is None:
+            exige_raw = _UNSUB_EXIGE_PADRAO
+        self._unsub_exige = [str(p).lower() for p in exige_raw if str(p).strip()]
 
         self._keywords = []
         for grupo in rules.get("keywords", []) or []:
@@ -102,13 +115,24 @@ class RuleEngine:
             if _casa_dominio(dominio, d):
                 return Decision("ruido", ACAO_LIXEIRA, f"blocklist:dominio:{d}")
 
-        # 3. List-Unsubscribe — newsletter/marketing de graça.
-        if self._unsub_ativo and list_unsubscribe.strip():
-            return Decision("newsletter", self._unsub_acao, "list-unsubscribe")
-
-        # 4. palavras-chave.
         assunto_l = (assunto or "").lower()
         addr_l = (remetente or "").lower()
+
+        # 3. List-Unsubscribe — sinal de "email em massa", não de "lixo". Bulk
+        # importante (banco, recibo, GitHub) também carrega o header, então ele
+        # SOZINHO não decide: só vira `acao` se, além do header, casar um termo de
+        # marketing (2 sinais). Sem 2º sinal, segue a cascata e acaba em 'revisar'.
+        # [unsubscribe].exige = [] desliga a exigência (header sozinho volta a decidir).
+        if self._unsub_ativo and list_unsubscribe.strip():
+            if not self._unsub_exige:
+                return Decision("newsletter", self._unsub_acao, "list-unsubscribe")
+            alvo = assunto_l + " " + addr_l
+            for termo in self._unsub_exige:
+                if termo in alvo:
+                    return Decision("newsletter", self._unsub_acao, f"list-unsubscribe+kw:{termo}")
+            # header presente mas sem termo de marketing: não decide aqui.
+
+        # 4. palavras-chave.
         for grupo in self._keywords:
             alvo = {
                 "assunto": assunto_l,

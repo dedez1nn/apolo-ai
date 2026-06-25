@@ -7,9 +7,7 @@ systemd. (undo chega depois.)
 """
 
 import argparse
-import os
 import shutil
-import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -23,7 +21,6 @@ from apolo.notify import notify
 from apolo.rules.engine import RuleEngine
 from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
-from apolo.tui import review_queue
 
 
 def cmd_run(config: Config, notify_enabled: bool = True) -> int:
@@ -218,15 +215,35 @@ def cmd_status(config: Config) -> int:
     return 0
 
 
+def _rules_count(rules_path: Path) -> int:
+    """Quantas entradas de allow/blocklist existem (pro Hub/Status)."""
+    if not rules_path.is_file():
+        return 0
+    with rules_path.open("rb") as f:
+        data = tomllib.load(f)
+    total = 0
+    for lista in ("allowlist", "blocklist"):
+        secao = data.get(lista, {}) or {}
+        total += len(secao.get("remetentes", []) or []) + len(secao.get("dominios", []) or [])
+    return total
+
+
 def cmd_review(config: Config) -> int:
-    """Abre a TUI pra despachar a fila; aplica as ações via IMAP ao sair."""
+    """Abre o hub (UI Textual) pra despachar a fila; aplica as ações via IMAP ao sair."""
+    # Import lazy: o Textual só é carregado aqui, nunca no caminho do `apolo run`.
+    from apolo.ui import run_ui
+    from apolo.ui.app import UiStats
+
     with Storage(config.db_path) as store:
         rows = store.fetch_queue()
-        if not rows:
-            print("Fila vazia — nada pra revisar.")
-            return 0
+        stats = UiStats(
+            last_run=store.last_processed_at(),
+            rules_count=_rules_count(config.rules_path),
+            status_counts=store.status_counts(),
+            acao_counts=store.acao_counts(),
+        )
 
-        itens = review_queue(rows, config.rules_path)
+        itens = run_ui(rows, config.rules_path, stats, config)
         if not itens:
             print("Nada despachado.")
             return 0
@@ -300,10 +317,6 @@ def cmd_rules(config: Config) -> int:
     return 0
 
 
-_SYSTEMD_TEMPLATE_DIR = Path(__file__).resolve().parent / "systemd"
-_USER_UNIT_DIR = Path(os.path.expanduser("~/.config/systemd/user"))
-
-
 def cmd_setup(config: Config, interval: str, enable: bool = True) -> int:
     """Renderiza as units do systemd (user) e ativa o timer.
 
@@ -311,27 +324,20 @@ def cmd_setup(config: Config, interval: str, enable: bool = True) -> int:
     depende de venv nem de caminho chumbado. Reentrante: rodar de novo regrava as
     units (útil pra trocar o intervalo) e recarrega o systemd.
     """
-    workdir = Path(__file__).resolve().parent.parent  # raiz do projeto
-    fields = {"python": sys.executable, "workdir": str(workdir), "interval": interval}
+    from apolo import scheduler
 
-    _USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
-    for nome in ("apolo.service", "apolo.timer"):
-        template = (_SYSTEMD_TEMPLATE_DIR / nome).read_text(encoding="utf-8")
-        destino = _USER_UNIT_DIR / nome
-        destino.write_text(template.format(**fields), encoding="utf-8")
+    for destino in scheduler.escrever_units(interval):
         print(f"escrito: {destino}")
 
     if shutil.which("systemctl") is None:
         print("systemctl não encontrado — units escritas, mas não ativadas.")
         return 0
 
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
     if enable:
-        subprocess.run(
-            ["systemctl", "--user", "enable", "--now", "apolo.timer"], check=False
-        )
-        print(f"timer ativado (a cada {interval}). Status: systemctl --user status apolo.timer")
+        print(scheduler.ativar(interval))
+        print("Status: systemctl --user status apolo.timer")
     else:
+        scheduler._systemctl("daemon-reload")
         print("units escritas. Ative com: systemctl --user enable --now apolo.timer")
     print("Logs: journalctl --user -u apolo -f")
     return 0

@@ -4,36 +4,53 @@ Triador pessoal de emails. Roda em lote (não é daemon eterno), reduz ruído de
 forma determinística e enfileira o resíduo pra revisão manual. Ferramenta de uso
 pessoal, na própria máquina — lê o Proton Mail via **Proton Bridge** (IMAP local).
 
-A arquitetura completa e os princípios de design estão em [`apolo.md`](apolo.md).
+Documentação: arquitetura e princípios em [`docs/apolo.md`](docs/apolo.md); a
+interface gráfica em [`docs/ui.md`](docs/ui.md); o botão da Waybar em
+[`docs/waybar.md`](docs/waybar.md).
 
 ## Estado atual — passos 1 a 5 do roadmap
 
 Implementado o **backbone** (fetch incremental + SQLite), a **limpeza de corpo
-HTML/CSS**, o **motor de regras determinístico**, a **fila de revisão (TUI)** com
-`block`/`allow` de terminal, a **classificação do resíduo via Ollama** e as
-**notificações `notify-send` + timer do systemd** (`apolo setup`).
+HTML/CSS**, o **motor de regras determinístico**, a **UI de revisão (Textual)** —
+um hub com fila, gerenciador de regras e configurações — além de `block`/`allow`
+de terminal, a **classificação do resíduo via Ollama** e as **notificações
+`notify-send` + timer do systemd** (`apolo setup`).
 
 ```
 apolo/
   __init__.py
   config.py            # credenciais/Bridge via env + .env (parser stdlib)
+  config_writer.py     # escrita parcial e atômica do .env (UI de configurações)
   cli.py               # run / status / review / block / allow / rules / setup
   clean.py             # HTML/CSS -> texto limpo (passo 1.5)
   actions.py           # despacha a fila: move pra Trash + loga (passo 3)
-  tui.py               # fila de revisão em curses (passo 3)
+  scheduler.py         # controle do systemd timer (usado pela UI e pelo setup)
   notify.py            # notify-send best-effort (passo 5)
+  ui/                  # interface Textual (hub + telas) — ver docs/ui.md
   ai/ollama.py         # classificação do resíduo via Ollama (passo 4)
   fetch/imap.py        # conexão Bridge, busca incremental + copy/expunge
   storage/db.py        # SQLite: emails + acoes (log p/ undo) + meta
   rules/engine.py      # cascata de precedência (passo 2)
-  rules/writer.py      # escrita das regras no TOML (block/allow)
+  rules/writer.py      # leitura/escrita das regras no TOML (block/allow + unsubscribe)
   rules/config.toml    # regras editáveis à mão
   systemd/             # templates apolo.service + apolo.timer (passo 5)
 ```
 
-Sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`, `ssl`,
-`html.parser`, `tomllib`, `curses`, `urllib`); notificação via `notify-send`
-(libnotify) e agendamento via `systemd --user`.
+Núcleo sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email`,
+`ssl`, `html.parser`, `tomllib`, `urllib`); notificação via `notify-send`
+(libnotify) e agendamento via `systemd --user`. O caminho do timer (`apolo run`)
+nunca importa nada de terceiros.
+
+A **única** dependência externa é o [Textual](https://textual.textualize.io/),
+usado só pela UI (`apolo review`, em `apolo/ui/`) e importado de forma *lazy*.
+Vive num venv do projeto:
+
+```bash
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt   # textual
+```
+
+A UI (e o botão da Waybar) rodam com `.venv/bin/python -m apolo.cli review`.
 
 ## Limpeza de corpo (passo 1.5)
 
@@ -85,7 +102,7 @@ cp .env.example .env
 python -m apolo.cli run                  # busca, classifica e enfileira
 python -m apolo.cli run --quiet          # idem, sem notificação de desktop
 python -m apolo.cli status               # contadores e ações sugeridas
-python -m apolo.cli review               # TUI pra despachar a fila
+python -m apolo.cli review               # abre o hub (UI Textual) — ver docs/ui.md
 python -m apolo.cli rules                # lista as regras
 python -m apolo.cli block promo.x.com    # adiciona à blocklist
 python -m apolo.cli allow chefe@x.com    # adiciona à allowlist
@@ -127,7 +144,11 @@ casar decide** (`apolo/rules/engine.py`), tudo sem IA:
 
 1. **allowlist** (remetente/domínio confiável) → mantém, nunca é tocado.
 2. **blocklist** (ruído conhecido) → sugere lixeira.
-3. **`List-Unsubscribe`** → newsletter/marketing, ação conforme o config.
+3. **`List-Unsubscribe` + termo de marketing** (2 sinais) → newsletter, ação
+   conforme o config. O header sozinho **não** decide — bulk importante (banco,
+   recibo, GitHub) também o tem; só vira ação se casar também um termo de
+   `[unsubscribe].exige`. Sem 2º sinal, segue a cascata. `exige = []` volta ao
+   header-sozinho.
 4. **palavras-chave** no assunto/remetente → ação por grupo.
 5. *(IA — passo 4, ainda não)*
 6. **default** → sem confiança, vai pra fila de revisão.
@@ -140,20 +161,32 @@ ficam num TOML editável à mão — `apolo/rules/config.toml` (ou aponte outro 
 terminal e o resto entra na fila de revisão (`aguardando`) com a ação sugerida.
 A execução automática (sem o dono) só chega quando uma regra for promovida (passo 6).
 
-## Fila de revisão (passo 3)
+## Interface de revisão (passo 3, em Textual)
 
-`apolo review` abre uma TUI em curses com a fila (`aguardando`):
+`apolo review` abre o **hub** — uma UI dark, keyboard-first, em
+[Textual](https://textual.textualize.io/) (substitui a antiga TUI em curses).
+Do hub você navega por seta + Enter para: a **fila de revisão**, o **gerenciador
+de regras** (listar/remover/adicionar com prévia ao vivo), as **configurações**
+(timer, IA, unsubscribe) e o **status**. Documentação completa em
+[`docs/ui.md`](docs/ui.md).
+
+O Textual é a **única** dependência externa e vive num venv do projeto; o botão
+da Waybar e o `apolo review` rodam com `.venv/bin/python` (ver topo do README e
+[`docs/waybar.md`](docs/waybar.md)). O caminho do timer (`apolo run`) nunca o
+importa.
+
+Na fila (`aguardando`), cada email já vem com a ação sugerida pela cascata:
 
 ```
-↑/↓ mover   d lixeira   m manter   b block   a allow   enter despachar   q sair
+↑/↓ mover   d lixeira   m manter   b block   a allow   u desfazer   ↵ aplicar   esc voltar
 ```
 
-Cada email já vem com a ação sugerida pela cascata; você confirma ou troca.
 `b`/`a` são o **loop de aprendizado**: gravam o domínio do remetente na
 block/allowlist na hora (via `apolo/rules/writer.py`, que preserva os comentários
-do TOML e valida antes de salvar) e ajustam a ação do item.
+do TOML e valida antes de salvar) e ajustam a ação do item; `u` desfaz (e remove
+a regra recém-criada).
 
-Ao apertar **enter**, a TUI fecha e o dispatch aplica as decisões: itens `manter`
+Ao apertar **enter**, a UI volta ao hub e o dispatch aplica as decisões: itens `manter`
 só saem da fila; itens `lixeira` são movidos pra Trash. Como o Bridge não tem
 `MOVE`, a remoção é `COPY` pra Trash + `\Deleted` + `EXPUNGE` — **reversível**,
 já que a mensagem fica na Trash, e cada remoção é registrada na tabela `acoes`

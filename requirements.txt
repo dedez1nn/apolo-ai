@@ -1,0 +1,3 @@
+# Dependências externas do Apolo — apenas a UI (apolo/ui/) usa Textual.
+# O núcleo (fetch/rules/ai/storage/actions) e o `apolo run` seguem 100% stdlib.
+textual>=8,<9

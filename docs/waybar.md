@@ -32,9 +32,12 @@ magick ~/Downloads/apolo.png -resize 48x48 -background none \
 
 ```bash
 #!/usr/bin/env bash
-# Lançador da TUI de revisão do apolo — chamado pelo botão da Waybar (kitty -e).
+# Lançador da UI de revisão do apolo — chamado pelo botão da Waybar (kitty -e).
 cd "$HOME/proton-api" || { echo "pasta ~/proton-api não encontrada"; read -rn1; exit 1; }
-python -m apolo.cli review
+# A UI usa Textual, que vive no venv do projeto; o python do sistema não o tem.
+PY="$HOME/proton-api/.venv/bin/python"
+[ -x "$PY" ] || PY="python"   # fallback se o venv ainda não existir
+"$PY" -m apolo.cli review
 rc=$?
 if [ "$rc" -ne 0 ]; then
     echo
@@ -42,8 +45,10 @@ if [ "$rc" -ne 0 ]; then
 fi
 ```
 
-A TUI é em curses, então precisa de um terminal — o `on-click` abre o `kitty`
-com `-e` apontando pra este script.
+A UI é Textual (`apolo/ui/`), então precisa de um terminal — o `on-click` abre o
+`kitty` com `-e` apontando pra este script. O Textual mora no venv
+(`~/proton-api/.venv`); recrie com `python -m venv .venv && .venv/bin/pip
+install -r requirements.txt`.
 
 ### 3. Módulo — em `~/.config/waybar/UserModules`
 

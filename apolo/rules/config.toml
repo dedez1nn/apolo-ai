@@ -30,9 +30,14 @@ dominios = [
 ]
 
 [unsubscribe]
-# Emails com header List-Unsubscribe são quase sempre newsletter/marketing.
+# O header List-Unsubscribe marca "email em massa" — mas bulk importante (banco,
+# recibo, GitHub) também o tem. Por isso ele SOZINHO não decide: só vira `acao`
+# se, além do header, casar um dos termos abaixo (2 sinais). Sem 2º sinal, o
+# email segue a cascata e acaba em 'revisar'. exige = [] volta ao header-sozinho.
 ativo = true
 acao = "lixeira"   # "lixeira" ou "revisar"
+exige = ["oferta", "promoção", "promocao", "desconto", "off", "cupom",
+         "black friday", "newsletter", "novidades", "sale", "deal"]
 
 # Grupos de palavra-chave (substring, sem diferenciar maiúsculas/acento opcional).
 # campo: "assunto" | "remetente" | "ambos"

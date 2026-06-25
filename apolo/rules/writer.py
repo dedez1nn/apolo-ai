@@ -101,6 +101,72 @@ def remove_rule_entry(rules_path: Path, *, lista: str, tipo: str, valor: str) ->
     return "removed"
 
 
+_UNSUB_ACOES = {"lixeira", "revisar"}
+
+
+def set_unsubscribe_acao(rules_path: Path, acao: str) -> str:
+    """Define [unsubscribe].acao no TOML, preservando comentários. Devolve a ação.
+
+    Valida o resultado com tomllib antes de gravar (atômico). Cria a seção se faltar.
+    """
+    acao = acao.strip().lower()
+    if acao not in _UNSUB_ACOES:
+        raise ValueError(f"ação de unsubscribe inválida: {acao!r} (use {sorted(_UNSUB_ACOES)})")
+
+    rules_path = Path(rules_path)
+    text = rules_path.read_text(encoding="utf-8") if rules_path.is_file() else ""
+    lines = text.splitlines()
+
+    sec = _find_section(lines, "unsubscribe")
+    if sec is None:
+        bloco = f'\n[unsubscribe]\nativo = true\nacao = "{acao}"\n'
+        novo = (text.rstrip("\n") + "\n" + bloco) if text.strip() else bloco.lstrip("\n")
+    else:
+        end = _section_end(lines, sec)
+        key_re = re.compile(r'^(\s*acao\s*=\s*)"[^"]*"(.*)$')
+        for i in range(sec + 1, end):
+            m = key_re.match(lines[i])
+            if m:
+                lines[i] = f'{m.group(1)}"{acao}"{m.group(2)}'  # preserva comentário inline
+                break
+        else:
+            lines.insert(sec + 1, f'acao = "{acao}"')
+        novo = "\n".join(lines) + "\n"
+
+    parsed = tomllib.loads(novo)
+    if (parsed.get("unsubscribe", {}) or {}).get("acao") != acao:
+        raise RuntimeError("falha ao gravar [unsubscribe].acao no TOML")
+    _atomic_write(rules_path, novo)
+    return acao
+
+
+def list_entries(rules_path: Path) -> list[tuple[str, str, str]]:
+    """Lista (lista, tipo, valor) de allow/blocklist — pra UI de gerenciamento."""
+    rules_path = Path(rules_path)
+    if not rules_path.is_file():
+        return []
+    with rules_path.open("rb") as f:
+        data = tomllib.load(f)
+    out: list[tuple[str, str, str]] = []
+    for lista in ("allowlist", "blocklist"):
+        secao = data.get(lista, {}) or {}
+        for v in secao.get("remetentes", []) or []:
+            out.append((lista, "remetente", str(v)))
+        for v in secao.get("dominios", []) or []:
+            out.append((lista, "dominio", str(v)))
+    return out
+
+
+def get_unsubscribe_acao(rules_path: Path, default: str = "revisar") -> str:
+    """Lê [unsubscribe].acao (pra preencher a tela de Configurações)."""
+    rules_path = Path(rules_path)
+    if not rules_path.is_file():
+        return default
+    with rules_path.open("rb") as f:
+        data = tomllib.load(f)
+    return str((data.get("unsubscribe", {}) or {}).get("acao", default)).lower()
+
+
 def _remove_from_array(text: str, lista: str, chave: str, valor: str) -> str:
     """Remove `"valor"` do array [lista].chave (inline ou multilinha)."""
     lines = text.splitlines()

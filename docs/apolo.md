@@ -44,7 +44,7 @@ Cascata com precedência clara; a **primeira regra que casar decide**. A ordem i
 
 1. **Allowlist** (remetente/domínio confiável) — passa sempre, nunca é tocado. Rede de segurança contra falso positivo; por isso fica no topo.
 2. **Blocklist** (remetente/domínio já marcado como ruído) — ação direta.
-3. **Header `List-Unsubscribe`** — pega newsletter/marketing sozinho, de graça.
+3. **Header `List-Unsubscribe` + termo de marketing (2 sinais)** — o header marca "email em massa", mas bulk importante (banco, recibo, GitHub) também o tem; por isso sozinho não decide. Só vira ação se casar também um termo de `[unsubscribe].exige`.
 4. **Palavras-chave / padrões** no assunto ou remetente.
 5. **Classificação da IA** — só o resíduo, mandando apenas assunto + primeiras linhas (rápido e privado), nunca o corpo inteiro.
 6. **Default** — sem confiança, vai pra fila de revisão e não faz nada.
@@ -56,7 +56,7 @@ Cascata com precedência clara; a **primeira regra que casar decide**. A ordem i
 ## Superfície da CLI
 
 - `apolo run` — dispara uma passada manual (a mesma que o timer chama).
-- `apolo review` — abre a TUI pra despachar a fila.
+- `apolo review` — abre a UI (hub Textual) pra despachar a fila e gerenciar regras/config (ver docs/ui.md).
 - `apolo block <dominio|email>` / `apolo allow <dominio|email>` — adiciona à regra direto do terminal, sem abrir o TOML.
 - `apolo rules` — lista/edita o que está configurado.
 - `apolo status` — última execução, tamanho da fila, contadores.
@@ -71,11 +71,14 @@ apolo/
   fetch/imap.py       # conexão Bridge, busca incremental por UID
   storage/db.py       # SQLite, estado + log
   rules/engine.py     # cascata de precedência
+  rules/writer.py     # escrita das regras (block/allow + unsubscribe)
   rules/config.toml   # participação do dono vive aqui
   ai/ollama.py        # classificação do resíduo
   actions.py          # executa ou enfileira, registra no log
   notify.py           # notify-send
-  tui.py              # fila de revisão
+  scheduler.py        # controle do systemd timer (UI + setup)
+  config_writer.py    # escrita parcial do .env (UI de configurações)
+  ui/                 # interface de revisão em Textual (ver docs/ui.md)
   systemd/            # apolo.service + apolo.timer
 ```
 
