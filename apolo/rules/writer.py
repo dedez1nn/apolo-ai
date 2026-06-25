@@ -74,6 +74,67 @@ def add_rule_entry(rules_path: Path, *, lista: str, tipo: str, valor: str) -> st
     return "added"
 
 
+def remove_rule_entry(rules_path: Path, *, lista: str, tipo: str, valor: str) -> str:
+    """Remove um remetente/domínio da allow/blocklist (sustenta o undo da TUI).
+
+    Retorna "removed" ou "absent". Valida o TOML resultante antes de gravar.
+    """
+    if lista not in _KEYS:
+        raise ValueError(f"lista inválida: {lista!r}")
+    if tipo not in _KEYS[lista]:
+        raise ValueError(f"tipo inválido: {tipo!r}")
+
+    chave = _KEYS[lista][tipo]
+    valor = normalize_valor(tipo, valor)
+    rules_path = Path(rules_path)
+    if not _already_present(rules_path, lista, chave, valor):
+        return "absent"
+
+    original = rules_path.read_text(encoding="utf-8")
+    novo = _remove_from_array(original, lista, chave, valor)
+
+    parsed = tomllib.loads(novo)
+    if valor in {str(x).lower() for x in parsed.get(lista, {}).get(chave, [])}:
+        raise RuntimeError("falha ao remover a entrada do TOML (valor permaneceu)")
+
+    _atomic_write(rules_path, novo)
+    return "removed"
+
+
+def _remove_from_array(text: str, lista: str, chave: str, valor: str) -> str:
+    """Remove `"valor"` do array [lista].chave (inline ou multilinha)."""
+    lines = text.splitlines()
+    sec_idx = _find_section(lines, lista)
+    if sec_idx is None:
+        return text
+    sec_end = _section_end(lines, sec_idx)
+
+    key_re = re.compile(rf"^\s*{re.escape(chave)}\s*=\s*\[")
+    for i in range(sec_idx + 1, sec_end):
+        if not key_re.match(lines[i]):
+            continue
+        after = lines[i][lines[i].index("[") + 1 :]
+        if "]" in after:
+            # Array numa linha só.
+            head = lines[i][: lines[i].index("[") + 1]
+            inner, _, tail = lines[i][lines[i].index("[") + 1 :].rpartition("]")
+            itens = [s.strip() for s in inner.split(",") if s.strip()]
+            itens = [s for s in itens if not (s[:1] == '"' and s[1:-1].lower() == valor)]
+            lines[i] = f"{head}{', '.join(itens)}]{tail}"
+            return "\n".join(lines) + "\n"
+        # Array multilinha: acha a linha do elemento e remove.
+        for j in range(i + 1, sec_end):
+            stripped = lines[j].strip()
+            if stripped.startswith("]"):
+                break
+            m = re.match(r'^"([^"]*)"\s*,?\s*$', stripped)
+            if m and m.group(1).lower() == valor:
+                del lines[j]
+                return "\n".join(lines) + "\n"
+        break
+    return "\n".join(lines) + "\n"
+
+
 def _insert_into_array(text: str, lista: str, chave: str, valor: str) -> str:
     """Insere `  "valor",` no array [lista].chave, criando o que faltar."""
     entry_line = f'  "{valor}",'
