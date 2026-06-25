@@ -98,7 +98,7 @@ class QueueScreen(Screen):
         return self._list.index
 
     # ----- decisões -----
-    def decidir(self, acao: str, rule_undo=None) -> None:
+    async def decidir(self, acao: str, rule_undo=None) -> None:
         idx = self._idx()
         if idx is None or idx >= len(self.app.queue):
             return
@@ -106,19 +106,19 @@ class QueueScreen(Screen):
         self.hist.append((it, idx, it.acao, rule_undo))
         it.acao = acao
         del self.app.queue[idx]
-        row = self._list.children[idx]
-        row.remove()
+        # pop aguarda o DOM e reposiciona o cursor automaticamente.
+        await self._list.pop(idx)
         self._render_header()
 
-    def action_decidir(self, acao: str) -> None:
+    async def action_decidir(self, acao: str) -> None:
         idx = self._idx()
         if idx is None or idx >= len(self.app.queue):
             return
         rem = self.app.queue[idx].remetente
-        self.decidir(acao)
+        await self.decidir(acao)
         self._msg(f"[{ACAO_COR[acao]}]→ {ACAO_ROTULO[acao]}:[/] {rem}")
 
-    def action_aprender(self, lista: str) -> None:
+    async def action_aprender(self, lista: str) -> None:
         idx = self._idx()
         if idx is None or idx >= len(self.app.queue):
             return
@@ -134,7 +134,7 @@ class QueueScreen(Screen):
             self._msg(f"[tomato]erro ao gravar regra: {e}[/]")
             return
         rule_undo = (lista, "dominio", dominio) if status == "added" else None
-        self.decidir(acao, rule_undo)
+        await self.decidir(acao, rule_undo)
         verbo = "já existia" if status == "exists" else "criada"
         self._msg(f"[{ACAO_COR[acao]}]{lista}: {dominio} {verbo} → {ACAO_ROTULO[acao]}[/]")
 

@@ -226,6 +226,41 @@ AddRuleModal {
     border-top: dashed $primary 40%;
 }
 
+/* ---------- Modal: rodar agora ---------- */
+RunModal {
+    align: center middle;
+}
+
+#run-box {
+    width: 60;
+    max-width: 90%;
+    height: auto;
+    padding: 1 2;
+    border: round $accent;
+    background: $surface;
+}
+
+#run-msg {
+    padding: 0 0 0 0;
+    color: $text;
+}
+
+/* ---------- Prévia da cascata ---------- */
+#prev-header {
+    padding: 1 2 0 2;
+    height: auto;
+}
+
+#prev-scroll {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#prev-body {
+    height: auto;
+    padding: 0 1 2 1;
+}
+
 /* ---------- Status ---------- */
 #status-box {
     width: 60;
