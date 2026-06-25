@@ -19,20 +19,26 @@ from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR
 
 _ACOES_VALIDAS = {ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR}
 
-_PROMPT = """Você é um filtro de emails pessoais que reduz ruído na caixa de entrada.
-Classifique o email abaixo e responda APENAS com JSON, sem texto fora dele:
-{{"categoria": "<rótulo curto em uma palavra>", "acao": "lixeira" | "revisar" | "manter"}}
+_PROMPT = """Classifique o email abaixo escolhendo UMA ação:
+- lixeira: spam, promoção, marketing, newsletter, notificação automática sem valor
+- manter: pessoal, trabalho, financeiro, segurança, alguém escrevendo de verdade
+- revisar: qualquer dúvida
 
-Critério da ação:
-- "lixeira": ruído claro — marketing, newsletter, notificação automática sem valor, spam.
-- "manter": claramente importante ou pessoal — alguém escrevendo de verdade, conta, segurança, trabalho, finanças.
-- "revisar": na dúvida.
-
-Email:
 Assunto: {assunto}
 De: {remetente}
-Trecho:
-{trecho}"""
+Trecho: {trecho}"""
+
+_FORMAT_SCHEMA = {
+    "type": "object",
+    "properties": {"acao": {"type": "string", "enum": ["lixeira", "manter", "revisar"]}},
+    "required": ["acao"],
+}
+
+_ACAO_CATEGORIA = {
+    ACAO_LIXEIRA: "ruido",
+    ACAO_MANTER: "confiavel",
+    ACAO_REVISAR: "desconhecido",
+}
 
 
 @dataclass(frozen=True)
@@ -80,7 +86,7 @@ class OllamaClient:
             "model": self.model,
             "prompt": prompt,
             "stream": False,
-            "format": "json",  # constrange a saída a JSON válido
+            "format": _FORMAT_SCHEMA,  # constrange a saída ao enum válido
             "keep_alive": self.keep_alive,
             "options": {"temperature": 0},  # determinístico
         }
@@ -93,8 +99,16 @@ class OllamaClient:
 
         acao = str(parsed.get("acao", "")).lower().strip()
         if acao not in _ACOES_VALIDAS:
-            acao = ACAO_REVISAR  # saída fora do contrato: não confia, manda revisar
-        categoria = str(parsed.get("categoria", "ia")).lower().strip() or "ia"
+            # modelo pequeno às vezes coloca a ação em outro campo — varre tudo
+            for v in parsed.values():
+                candidate = str(v).lower().strip()
+                if candidate in _ACOES_VALIDAS:
+                    acao = candidate
+                    break
+            else:
+                acao = ACAO_REVISAR
+        categoria = str(parsed.get("categoria", "")).lower().strip()
+        categoria = categoria or _ACAO_CATEGORIA.get(acao, "ia")
         return AIDecision(categoria=categoria, acao=acao)
 
     def _post(self, path: str, payload: dict) -> dict:
