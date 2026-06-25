@@ -1,7 +1,19 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
+
+# Caches de ferramentas
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Segredos e estado local
 .env
 *.db
 *.db-wal
 *.db-shm
+
+# Escritas atômicas (.env / config.toml gravam num *.tmp antes do replace)
+*.tmp
