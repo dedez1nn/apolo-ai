@@ -4,15 +4,18 @@ Mesma semântica do curses antigo, agora em Textual: lista navegável, decide co
 d/m/b/a, a decisão tira o email da lista na hora (vai pra uma pilha de história);
 `u` desfaz a última. `b`/`a` gravam a regra na hora (loop de aprendizado).
 
-Enter aplica: as decisões viram `dispatch_items` no app (o cli despacha via IMAP
-ao fechar). Sair sem aplicar cancela as decisões da sessão (devolve à fila).
+Enter aplica AGORA: despacha as decisões na hora (move pra lixeira via IMAP/
+Gmail) num modal com worker, e mostra o resultado. Sair sem aplicar (q/Esc)
+cancela as decisões da sessão (devolve à fila).
 """
 
 from __future__ import annotations
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
+from textual.containers import Vertical
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Label, ListItem, ListView, Static
 
 from apolo.actions import DispatchItem
@@ -160,21 +163,30 @@ class QueueScreen(Screen):
         self._msg(pre + f"↩ desfeito: {it.remetente}")
 
     def action_aplicar(self) -> None:
-        for it, *_ in self.hist:
-            if it.acao in (ACAO_LIXEIRA, ACAO_MANTER):
-                self.app.dispatch_items.append(
-                    DispatchItem(
-                        pasta=it.pasta,
-                        uidvalidity=it.uidvalidity,
-                        uid=it.uid,
-                        message_id=it.message_id,
-                        acao=it.acao,
-                        conta=it.conta,
-                        provider_id=it.provider_id,
-                    )
-                )
+        itens = [
+            DispatchItem(
+                pasta=it.pasta,
+                uidvalidity=it.uidvalidity,
+                uid=it.uid,
+                message_id=it.message_id,
+                acao=it.acao,
+                conta=it.conta,
+                provider_id=it.provider_id,
+            )
+            for it, *_ in self.hist
+            if it.acao in (ACAO_LIXEIRA, ACAO_MANTER)
+        ]
         self.hist = []
-        self.dismiss()
+        if not itens:
+            self.dismiss()
+            return
+
+        # Despacha AGORA (na thread, via modal) — o Enter aplica de fato.
+        def _apos(msg: str | None) -> None:
+            self.app.notify(f"Aplicado: {msg}" if msg else "Aplicado.", title="apolo")
+            self.dismiss()
+
+        self.app.push_screen(DispatchModal(itens), _apos)
 
     def action_voltar(self) -> None:
         # Sair sem aplicar = cancelar as decisões da sessão (devolve à fila).
@@ -187,3 +199,38 @@ class QueueScreen(Screen):
 
     def action_cursor_down(self) -> None:
         self._list.action_cursor_down()
+
+
+class DispatchModal(ModalScreen):
+    """Aplica as decisões numa thread e fecha devolvendo o resumo (string).
+
+    Reusa o estilo do RunModal (#run-box). O despacho pode levar alguns segundos
+    — ou até ~60s se o Bridge estiver subindo (o BridgeClient reenta a conexão).
+    """
+
+    def __init__(self, itens: list[DispatchItem]):
+        super().__init__()
+        self._itens = itens
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="run-box"):
+            yield Static("[b]  Aplicando…[/]", classes="cfg-title")
+            yield Static("  Movendo pra lixeira e marcando…", id="run-msg")
+            yield Static("  [dim](pode levar alguns segundos)[/]")
+
+    def on_mount(self) -> None:
+        self._executar()
+
+    @work(thread=True)
+    def _executar(self) -> None:
+        from apolo.actions import apply_decisions
+
+        try:
+            res = apply_decisions(self.app.config, self._itens)
+            partes = [f"{res.lixeira} lixeira", f"{res.mantidos} mantido(s)"]
+            if res.falhas:
+                partes.append(f"{res.falhas} falha(s)")
+            msg = ", ".join(partes)
+        except Exception as exc:
+            msg = f"erro: {exc}"
+        self.app.call_from_thread(self.dismiss, msg)

@@ -12,7 +12,6 @@ import sys
 import tomllib
 from pathlib import Path
 
-from apolo.actions import dispatch, dispatch_gmail
 from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import AccountConfig, Config, load_accounts
@@ -353,7 +352,14 @@ def _rules_count(rules_path: Path) -> int:
 
 
 def cmd_review(config: Config) -> int:
-    """Abre o hub (UI Textual) pra despachar a fila; aplica as ações ao sair."""
+    """Abre o hub (UI Textual) pra revisar a fila.
+
+    O despacho real (mover pra lixeira via IMAP/Gmail) acontece DENTRO da TUI,
+    na hora em que o dono aperta Enter pra aplicar — ver apolo.ui.queue. Aqui só
+    montamos os dados, abrimos a UI e, por garantia, despachamos qualquer item
+    que por algum motivo tenha voltado sem ter sido aplicado inline.
+    """
+    from apolo.actions import apply_decisions
     from apolo.ui import run_ui
     from apolo.ui.app import UiStats
 
@@ -371,68 +377,14 @@ def cmd_review(config: Config) -> int:
             acao_counts=store.acao_counts(),
         )
 
-        itens = run_ui(rows, config.rules_path, stats, config, contas_ativas=contas_ativas)
-        if not itens:
-            print("Nada despachado.")
-            return 0
+    itens = run_ui(rows, config.rules_path, stats, config, contas_ativas=contas_ativas)
+    if not itens:
+        return 0
 
-        # Separa IMAP vs Gmail
-        imap_itens = [i for i in itens if i.conta == "proton"]
-        gmail_itens = [i for i in itens if i.conta.startswith("gmail:")]
-
-        resultado_total = 0
-        resultado_lixeira = 0
-        resultado_mantidos = 0
-
-        if imap_itens:
-            precisa_imap = any(i.acao == "lixeira" for i in imap_itens)
-            if precisa_imap:
-                config.require_credentials()
-                with BridgeClient(
-                    config.imap_host, config.imap_port, config.imap_security
-                ) as client:
-                    client.login(config.username, config.password)
-                    res = dispatch(client, store, imap_itens, trash_folder=config.trash_folder)
-            else:
-                res = dispatch(_NoClient(), store, imap_itens, trash_folder=config.trash_folder)
-            resultado_lixeira += res.lixeira
-            resultado_mantidos += res.mantidos
-
-        if gmail_itens:
-            # Agrupa por conta Gmail
-            by_conta: dict[str, list] = {}
-            for item in gmail_itens:
-                by_conta.setdefault(item.conta, []).append(item)
-            for conta_id, citens in by_conta.items():
-                name = conta_id.removeprefix("gmail:")
-                account = accounts_by_name.get(name)
-                if account is None:
-                    print(f"conta {conta_id!r} não encontrada em accounts.toml — pulado.")
-                    continue
-                token_path = config.tokens_dir / f"{name}.json"
-                res = dispatch_gmail(
-                    store,
-                    citens,
-                    name=name,
-                    client_id=account.client_id,
-                    client_secret=account.client_secret,
-                    token_path=token_path,
-                )
-                resultado_lixeira += res.lixeira
-                resultado_mantidos += res.mantidos
-
-    print(f"Despachado: {resultado_lixeira} pra lixeira, {resultado_mantidos} mantido(s).")
+    # Fallback: a TUI normalmente já despachou inline; se algo voltou, aplica.
+    res = apply_decisions(config, itens)
+    print(f"Despachado: {res.lixeira} pra lixeira, {res.mantidos} mantido(s).")
     return 0
-
-
-class _NoClient:
-    """Sentinela: usado quando nenhum item vai pra lixeira (sem IMAP)."""
-
-    def copy_to(self, *a, **k):  # pragma: no cover - nunca chamado
-        raise AssertionError("dispatch sem IMAP não deveria mover emails")
-
-    def expunge(self, *a, **k):  # pragma: no cover
-        raise AssertionError("dispatch sem IMAP não deveria expurgar")
 
 
 def _cmd_rule(config: Config, lista: str, valor: str, tipo: str | None) -> int:

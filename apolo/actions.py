@@ -9,6 +9,7 @@ A promoção pra execução automática (sem o dono) só chega no passo 6.
 """
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,19 +35,33 @@ class DispatchItem:
 class DispatchResult:
     lixeira: int = 0
     mantidos: int = 0
+    falhas: int = 0
 
 
 def dispatch(client: BridgeClient, store: Storage, itens: list[DispatchItem], *, trash_folder: str) -> DispatchResult:
     """Aplica as ações: 'manter' só marca despachado; 'lixeira' move pra Trash.
 
-    Agrupa o EXPUNGE por pasta (uma vez por pasta com remoções).
+    Agrupa o EXPUNGE por pasta (uma vez por pasta com remoções). Cada item é
+    isolado: se o COPY de um UID falha (ex.: UID obsoleto após resync do Bridge),
+    o item é pulado e contado em `falhas` — sem abortar o lote nem impedir o
+    EXPUNGE dos que deram certo.
     """
     result = DispatchResult()
     pastas_com_remocao: set[str] = set()
 
     for item in itens:
         if item.acao == ACAO_LIXEIRA:
-            client.copy_to(item.pasta, item.uid, trash_folder)
+            try:
+                client.copy_to(item.pasta, item.uid, trash_folder)
+            except Exception as e:
+                # UID já saiu da pasta (resync/movido fora) ou falha pontual de
+                # rede: não derruba o resto do lote.
+                print(
+                    f"aviso: pulei {item.pasta} UID {item.uid} (lixeira): {e}",
+                    file=sys.stderr,
+                )
+                result.falhas += 1
+                continue
             pastas_com_remocao.add(item.pasta)
             store.log_action(
                 pasta=item.pasta,
@@ -80,7 +95,10 @@ def dispatch(client: BridgeClient, store: Storage, itens: list[DispatchItem], *,
 
     # EXPUNGE depois de marcar tudo, pra não reabrir a pasta a cada email.
     for pasta in pastas_com_remocao:
-        client.expunge(pasta)
+        try:
+            client.expunge(pasta)
+        except Exception as e:
+            print(f"aviso: EXPUNGE em {pasta} falhou: {e}", file=sys.stderr)
 
     return result
 
@@ -131,3 +149,112 @@ def dispatch_gmail(
             result.mantidos += 1
 
     return result
+
+
+class _NoClient:
+    """Sentinela: usado quando nenhum item vai pra lixeira (sem IMAP)."""
+
+    def copy_to(self, *a, **k):
+        raise AssertionError("dispatch sem IMAP não deveria mover emails")
+
+    def expunge(self, *a, **k):
+        raise AssertionError("dispatch sem IMAP não deveria expurgar")
+
+
+def apply_decisions(config, itens: list[DispatchItem]) -> DispatchResult:
+    """Aplica de fato uma leva de decisões (IMAP + Gmail) e devolve o total.
+
+    Centraliza o despacho pra ser chamado tanto pelo `cli` (ao fechar a TUI)
+    quanto pela própria TUI (aplicar na hora, no Enter). Abre seu próprio
+    Storage; o login IMAP só acontece se houver ao menos um item 'lixeira'.
+    """
+    from apolo.config import load_accounts
+    from apolo.fetch.imap import BridgeClient
+
+    accounts_by_name = {
+        a.name: a for a in load_accounts(config.accounts_path) if a.provider == "gmail"
+    }
+    imap_itens = [i for i in itens if i.conta == "proton"]
+    gmail_itens = [i for i in itens if i.conta.startswith("gmail:")]
+    n_lix = sum(1 for i in itens if i.acao == ACAO_LIXEIRA)
+    _log(
+        config,
+        f"aplicando {len(itens)} item(ns): {len(imap_itens)} proton, "
+        f"{len(gmail_itens)} gmail, {n_lix} lixeira.",
+    )
+
+    total = DispatchResult()
+    try:
+        total = _apply_decisions_inner(
+            config, imap_itens, gmail_itens, accounts_by_name, BridgeClient
+        )
+    except Exception as e:
+        _log(config, f"FALHA: {type(e).__name__}: {e}")
+        raise
+    _log(
+        config,
+        f"FIM: {total.lixeira} lixeira, {total.mantidos} mantido(s), "
+        f"{total.falhas} falha(s).",
+    )
+    return total
+
+
+def _log(config, msg: str) -> None:
+    """Anexa uma linha datada a ~/.local/share/apolo/apolo.log (best-effort).
+
+    A TUI roda num popup que fecha ao terminar, então mensagens no terminal
+    somem. Este arquivo persiste o que cada despacho fez/falhou.
+    """
+    import datetime
+
+    try:
+        path = config.db_path.parent / "apolo.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().isoformat(timespec="seconds")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{ts} dispatch: {msg}\n")
+    except Exception:
+        pass
+
+
+def _apply_decisions_inner(config, imap_itens, gmail_itens, accounts_by_name, BridgeClient) -> DispatchResult:
+    total = DispatchResult()
+    with Storage(config.db_path) as store:
+        if imap_itens:
+            precisa_imap = any(i.acao == ACAO_LIXEIRA for i in imap_itens)
+            if precisa_imap:
+                config.require_credentials()
+                with BridgeClient(
+                    config.imap_host, config.imap_port, config.imap_security
+                ) as client:
+                    client.login(config.username, config.password)
+                    res = dispatch(client, store, imap_itens, trash_folder=config.trash_folder)
+            else:
+                res = dispatch(_NoClient(), store, imap_itens, trash_folder=config.trash_folder)
+            total.lixeira += res.lixeira
+            total.mantidos += res.mantidos
+            total.falhas += res.falhas
+
+        if gmail_itens:
+            by_conta: dict[str, list] = {}
+            for item in gmail_itens:
+                by_conta.setdefault(item.conta, []).append(item)
+            for conta_id, citens in by_conta.items():
+                name = conta_id.removeprefix("gmail:")
+                account = accounts_by_name.get(name)
+                if account is None:
+                    continue
+                token_path = config.tokens_dir / f"{name}.json"
+                res = dispatch_gmail(
+                    store,
+                    citens,
+                    name=name,
+                    client_id=account.client_id,
+                    client_secret=account.client_secret,
+                    token_path=token_path,
+                )
+                total.lixeira += res.lixeira
+                total.mantidos += res.mantidos
+                total.falhas += res.falhas
+
+    return total
