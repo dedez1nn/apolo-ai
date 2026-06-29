@@ -11,32 +11,12 @@ Princípios:
 import email
 import imaplib
 import ssl
-from dataclasses import dataclass
+import sys
+import time
 from email.header import decode_header
 from email.message import Message
 
-
-@dataclass(frozen=True)
-class FetchedEmail:
-    """Metadados de cabeçalho de um email novo (sem corpo)."""
-
-    uid: int
-    message_id: str | None
-    remetente: str
-    assunto: str
-    data: str
-    list_unsubscribe: str  # header (vazio se ausente) — usado pelo motor de regras
-
-
-@dataclass(frozen=True)
-class FolderResult:
-    """Resultado da varredura incremental de uma pasta."""
-
-    pasta: str
-    uidvalidity: int
-    resynced: bool
-    novos: list[FetchedEmail]
-    ultimo_uid: int  # maior UID visto agora (vira o novo ponteiro)
+from apolo.fetch import FetchedEmail, FolderResult  # noqa: F401
 
 
 def _decode_str(value: str | None) -> str:
@@ -56,17 +36,57 @@ def _decode_str(value: str | None) -> str:
 class BridgeClient:
     """Conexão com o Proton Bridge. Use como context manager."""
 
-    def __init__(self, host: str, port: int, security: str = "STARTTLS", timeout: float = 30.0):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        security: str = "STARTTLS",
+        timeout: float = 30.0,
+        connect_wait: float = 60.0,
+    ):
         self.host = host
         self.port = port
         self.security = security.upper()
         # Sem timeout, um Bridge travado/rate-limited pendura login/copy/expunge
         # pra sempre — e o terminal "congela". Com timeout, falha limpa.
         self.timeout = timeout
+        # Quanto tempo (s) esperar o Bridge aceitar conexão antes de desistir.
+        # O Bridge sobe alguns segundos depois do login/boot, então o serviço
+        # agendado e a TUI tentam conectar antes da porta 1143 abrir e levam
+        # "Connection refused". Em vez de abortar, reentamos até o Bridge subir.
+        self.connect_wait = connect_wait
         self._imap: imaplib.IMAP4 | None = None
 
+    def _connect(self) -> imaplib.IMAP4:
+        """Conecta na porta IMAP, reentando enquanto o Bridge ainda não subiu.
+
+        Reenta só em recusa/timeout de conexão (Bridge fora); outros erros sobem
+        na hora. Backoff de 1s→5s, desistindo após `connect_wait` segundos com
+        uma mensagem clara em vez de um traceback de ConnectionRefusedError.
+        """
+        deadline = time.monotonic() + self.connect_wait
+        delay = 1.0
+        avisou = False
+        while True:
+            try:
+                return imaplib.IMAP4(self.host, self.port, timeout=self.timeout)
+            except (ConnectionRefusedError, TimeoutError, OSError) as e:
+                if time.monotonic() >= deadline:
+                    raise ConnectionRefusedError(
+                        f"Proton Bridge não respondeu em {self.host}:{self.port} "
+                        f"após {self.connect_wait:.0f}s — ele está rodando?"
+                    ) from e
+                if not avisou:
+                    print(
+                        f"aguardando o Proton Bridge em {self.host}:{self.port}…",
+                        file=sys.stderr,
+                    )
+                    avisou = True
+                time.sleep(delay)
+                delay = min(delay * 1.5, 5.0)
+
     def __enter__(self) -> "BridgeClient":
-        self._imap = imaplib.IMAP4(self.host, self.port, timeout=self.timeout)
+        self._imap = self._connect()
         if self.security == "STARTTLS":
             # O Bridge usa um cert self-signed em loopback; não dá pra verificar
             # contra uma CA e não faz sentido em 127.0.0.1. Conexão local.

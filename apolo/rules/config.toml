@@ -35,7 +35,7 @@ dominios = [
 # se, além do header, casar um dos termos abaixo (2 sinais). Sem 2º sinal, o
 # email segue a cascata e acaba em 'revisar'. exige = [] volta ao header-sozinho.
 ativo = true
-acao = "lixeira"   # "lixeira" ou "revisar"
+acao = "revisar"   # "lixeira" ou "revisar"
 exige = ["oferta", "promoção", "promocao", "desconto", "off", "cupom",
          "black friday", "newsletter", "novidades", "sale", "deal"]
 

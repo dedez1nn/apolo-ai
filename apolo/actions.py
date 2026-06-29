@@ -10,6 +10,7 @@ A promoção pra execução automática (sem o dono) só chega no passo 6.
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from apolo.fetch.imap import BridgeClient
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER
@@ -24,7 +25,9 @@ class DispatchItem:
     uidvalidity: int
     uid: int
     message_id: str | None
-    acao: str  # ACAO_LIXEIRA | ACAO_MANTER
+    acao: str                    # ACAO_LIXEIRA | ACAO_MANTER
+    conta: str = "proton"        # "proton" ou "gmail:<name>"
+    provider_id: str | None = None  # Gmail message ID; None pra IMAP
 
 
 @dataclass
@@ -78,5 +81,53 @@ def dispatch(client: BridgeClient, store: Storage, itens: list[DispatchItem], *,
     # EXPUNGE depois de marcar tudo, pra não reabrir a pasta a cada email.
     for pasta in pastas_com_remocao:
         client.expunge(pasta)
+
+    return result
+
+
+def dispatch_gmail(
+    store: Storage,
+    itens: list[DispatchItem],
+    *,
+    name: str,
+    client_id: str,
+    client_secret: str,
+    token_path: Path,
+) -> DispatchResult:
+    """Despacha itens Gmail: lixeira via API, manter só marca no DB."""
+    from apolo.fetch.gmail import GmailClient
+
+    client = GmailClient(name, client_id, client_secret, token_path)
+    result = DispatchResult()
+
+    for item in itens:
+        if item.acao == ACAO_LIXEIRA:
+            if item.provider_id:
+                client.trash_message(item.provider_id)
+            store.log_action(
+                pasta=item.pasta,
+                uidvalidity=item.uidvalidity,
+                uid=item.uid,
+                acao=ACAO_LIXEIRA,
+                dado_reverter=json.dumps({
+                    "provider_id": item.provider_id,
+                    "conta": item.conta,
+                }),
+            )
+            store.mark_dispatched(
+                pasta=item.pasta,
+                uidvalidity=item.uidvalidity,
+                uid=item.uid,
+                acao_aplicada=ACAO_LIXEIRA,
+            )
+            result.lixeira += 1
+        elif item.acao == ACAO_MANTER:
+            store.mark_dispatched(
+                pasta=item.pasta,
+                uidvalidity=item.uidvalidity,
+                uid=item.uid,
+                acao_aplicada=ACAO_MANTER,
+            )
+            result.mantidos += 1
 
     return result

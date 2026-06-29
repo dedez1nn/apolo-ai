@@ -3,6 +3,8 @@
 Lê as credenciais do Bridge e os caminhos de estado de variáveis de ambiente,
 com um parser mínimo de .env (KEY=VALUE) pra não depender de python-dotenv.
 Como o oneshot roda sem TTY, nada de input() interativo aqui.
+
+Contas adicionais (Gmail, Outlook) ficam em accounts.toml; veja AccountConfig.
 """
 
 import os
@@ -30,15 +32,61 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return values
 
 
+def _xdg_data() -> str:
+    return os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+
+
 def _default_db_path() -> Path:
     """~/.local/share/apolo/apolo.db, respeitando XDG_DATA_HOME."""
-    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return Path(base) / "apolo" / "apolo.db"
+    return Path(_xdg_data()) / "apolo" / "apolo.db"
 
 
 def _default_rules_path() -> Path:
     """As regras vivem junto do pacote, em apolo/rules/config.toml."""
     return Path(__file__).resolve().parent / "rules" / "config.toml"
+
+
+def _default_accounts_path() -> Path:
+    return Path(_xdg_data()) / "apolo" / "accounts.toml"
+
+
+def _default_tokens_dir() -> Path:
+    return Path(_xdg_data()) / "apolo" / "tokens"
+
+
+@dataclass(frozen=True)
+class AccountConfig:
+    """Uma conta externa (Gmail, futuramente Outlook)."""
+
+    name: str                          # identificador livre: "pessoal", "work"…
+    provider: str                      # "gmail"
+    client_id: str
+    client_secret: str
+    folders: tuple[str, ...] = ("INBOX",)
+
+
+def load_accounts(accounts_path: Path | None = None) -> list[AccountConfig]:
+    """Lê accounts.toml; retorna [] se o arquivo não existir."""
+    import tomllib
+
+    path = accounts_path or _default_accounts_path()
+    if not path.is_file():
+        return []
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    accounts: list[AccountConfig] = []
+    for entry in data.get("accounts", []):
+        try:
+            accounts.append(AccountConfig(
+                name=entry["name"],
+                provider=entry["provider"],
+                client_id=entry.get("client_id", ""),
+                client_secret=entry.get("client_secret", ""),
+                folders=tuple(entry.get("folders", ["INBOX"])),
+            ))
+        except KeyError:
+            pass
+    return accounts
 
 
 @dataclass(frozen=True)
@@ -60,6 +108,8 @@ class Config:
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "llama3.2"
     ollama_keep_alive: str = "30m"
+    accounts_path: Path = field(default_factory=_default_accounts_path)
+    tokens_dir: Path = field(default_factory=_default_tokens_dir)
 
     @classmethod
     def load(cls) -> "Config":
@@ -84,6 +134,15 @@ class Config:
         folders_str = get("APOLO_FOLDERS", "INBOX")
         folders = tuple(f.strip() for f in folders_str.split(",") if f.strip())
 
+        accounts_path_str = get("APOLO_ACCOUNTS_PATH")
+        accounts_path = (
+            Path(os.path.expanduser(accounts_path_str)) if accounts_path_str else _default_accounts_path()
+        )
+        tokens_dir_str = get("APOLO_TOKENS_DIR")
+        tokens_dir = (
+            Path(os.path.expanduser(tokens_dir_str)) if tokens_dir_str else _default_tokens_dir()
+        )
+
         return cls(
             imap_host=get("APOLO_IMAP_HOST", "127.0.0.1"),
             imap_port=int(get("APOLO_IMAP_PORT", "1143")),
@@ -98,6 +157,8 @@ class Config:
             ollama_url=get("APOLO_OLLAMA_URL") or get("OLLAMA_HOST") or "http://127.0.0.1:11434",
             ollama_model=get("APOLO_OLLAMA_MODEL", "llama3.2"),
             ollama_keep_alive=get("APOLO_OLLAMA_KEEP_ALIVE", "30m"),
+            accounts_path=accounts_path,
+            tokens_dir=tokens_dir,
         )
 
     def require_credentials(self) -> None:

@@ -24,6 +24,7 @@ STATUS_DESPACHADO = "despachado"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS emails (
+    conta          TEXT    NOT NULL DEFAULT 'proton',
     pasta          TEXT    NOT NULL,
     uidvalidity    INTEGER NOT NULL,
     uid            INTEGER NOT NULL,
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS emails (
     acao_aplicada  TEXT,
     regra_casada   TEXT,
     processado_em  TEXT,
+    provider_id    TEXT,
     PRIMARY KEY (pasta, uidvalidity, uid)
 );
 
@@ -44,6 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_emails_status ON emails (status);
 
 CREATE TABLE IF NOT EXISTS acoes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    conta         TEXT    NOT NULL DEFAULT 'proton',
     pasta         TEXT    NOT NULL,
     uidvalidity   INTEGER NOT NULL,
     uid           INTEGER NOT NULL,
@@ -58,6 +61,22 @@ CREATE TABLE IF NOT EXISTS meta (
     ultimo_uid  INTEGER NOT NULL DEFAULT 0
 );
 """
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Migrações incrementais — idempotentes, safe pra dados existentes."""
+    cols_emails = {r[1] for r in conn.execute("PRAGMA table_info(emails)").fetchall()}
+    if "conta" not in cols_emails:
+        conn.execute("ALTER TABLE emails ADD COLUMN conta TEXT NOT NULL DEFAULT 'proton'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_conta ON emails (conta)")
+    if "provider_id" not in cols_emails:
+        conn.execute("ALTER TABLE emails ADD COLUMN provider_id TEXT")
+
+    cols_acoes = {r[1] for r in conn.execute("PRAGMA table_info(acoes)").fetchall()}
+    if "conta" not in cols_acoes:
+        conn.execute("ALTER TABLE acoes ADD COLUMN conta TEXT NOT NULL DEFAULT 'proton'")
+
+    conn.commit()
 
 
 def _now() -> str:
@@ -78,6 +97,7 @@ class Storage:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
+        _migrate(self.conn)
 
     # ----- ciclo de vida do context manager -----
     def __enter__(self) -> "Storage":
@@ -146,6 +166,8 @@ class Storage:
         assunto: str | None,
         data: str | None,
         status: str = STATUS_NOVO,
+        conta: str = "proton",
+        provider_id: str | None = None,
     ) -> bool:
         """Insere um email novo. Idempotente: ignora se o UID já existe.
 
@@ -155,11 +177,12 @@ class Storage:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO emails
-                    (pasta, uidvalidity, uid, message_id, remetente,
-                     assunto, data, status, processado_em)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (conta, pasta, uidvalidity, uid, message_id, remetente,
+                     assunto, data, status, processado_em, provider_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    conta,
                     pasta,
                     uidvalidity,
                     uid,
@@ -169,6 +192,7 @@ class Storage:
                     data,
                     status,
                     _now(),
+                    provider_id,
                 ),
             )
             return cur.rowcount > 0
@@ -229,11 +253,11 @@ class Storage:
         """Emails aguardando revisão, mais recentes primeiro."""
         return self.conn.execute(
             """
-            SELECT pasta, uidvalidity, uid, message_id, remetente, assunto,
-                   data, categoria, acao_sugerida, regra_casada
+            SELECT conta, pasta, uidvalidity, uid, message_id, remetente, assunto,
+                   data, categoria, acao_sugerida, regra_casada, provider_id
               FROM emails
              WHERE status = ?
-             ORDER BY pasta, uid DESC
+             ORDER BY conta, pasta, uid DESC
             """,
             (STATUS_AGUARDANDO,),
         ).fetchall()

@@ -12,4 +12,8 @@ After=network-online.target
 Type=oneshot
 WorkingDirectory={workdir}
 ExecStart={python} -m apolo.cli run
+# 75 (EX_TEMPFAIL) = Bridge ainda não subiu. O `apolo run` já espera o Bridge
+# por ~60s; se mesmo assim ele estiver fora (ex.: sem sessão GUI), saímos com 75
+# e o systemd NÃO marca a unidade como 'failed' — o timer reentará no próximo ciclo.
+SuccessExitStatus=75
 # A notificação usa o D-Bus da sessão; o systemd --user já o expõe ao serviço.

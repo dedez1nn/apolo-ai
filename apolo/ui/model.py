@@ -42,10 +42,12 @@ class Item:
     """Um email da fila de revisão; `acao` é a decisão atual (editável)."""
 
     def __init__(self, row):
+        self.conta = row["conta"] if "conta" in row.keys() else "proton"
         self.pasta = row["pasta"]
         self.uidvalidity = row["uidvalidity"]
         self.uid = row["uid"]
         self.message_id = row["message_id"]
+        self.provider_id = row["provider_id"] if "provider_id" in row.keys() else None
         self.remetente = row["remetente"] or ""
         self.assunto = row["assunto"] or ""
         self.data = row["data"] or ""

@@ -38,7 +38,9 @@ class EmailRow(ListItem):
         icone = ACAO_ICONE.get(it.acao, "")
         tag = ACAO_ROTULO.get(it.acao, it.acao).upper()
         rem = it.remetente or "(sem remetente)"
-        return f"[b {cor}]{icone} {tag:<8}[/]  {rem}"
+        contas = getattr(self.app, "_contas_ativas", set())
+        badge = f"[dim][{it.conta}][/] " if len(contas) > 1 else ""
+        return f"[b {cor}]{icone} {tag:<8}[/]  {badge}{rem}"
 
     def _linha2(self) -> str:
         it = self.item
@@ -167,6 +169,8 @@ class QueueScreen(Screen):
                         uid=it.uid,
                         message_id=it.message_id,
                         acao=it.acao,
+                        conta=it.conta,
+                        provider_id=it.provider_id,
                     )
                 )
         self.hist = []

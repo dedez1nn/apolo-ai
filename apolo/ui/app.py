@@ -38,23 +38,24 @@ class ApoloApp(App):
     TITLE = "apolo"
     SUB_TITLE = "triador de emails"
 
-    def __init__(self, rows, rules_path: Path, stats: UiStats, config=None):
+    def __init__(self, rows, rules_path: Path, stats: UiStats, config=None, contas_ativas: set | None = None):
         super().__init__()
         # Fila compartilhada: as telas mutam esta lista (decidir/desfazer).
         self.queue: list[Item] = [Item(r) for r in rows]
         self.rules_path = Path(rules_path)
         self.stats = stats
-        self.config = config  # Config (paths, IA, pastas) — usado pela tela de ajustes.
-        # Decisões confirmadas (Enter na fila) que o cli vai despachar via IMAP.
+        self.config = config
         self.dispatch_items: list[DispatchItem] = []
+        # Conjunto de contas ativas — usado pelo EmailRow pra mostrar badge de conta.
+        self._contas_ativas: set[str] = contas_ativas or {"proton"}
 
     def on_mount(self) -> None:
         self.theme = "textual-dark"
         self.push_screen(HubScreen())
 
 
-def run_ui(rows, rules_path: Path, stats: UiStats, config=None) -> list[DispatchItem]:
+def run_ui(rows, rules_path: Path, stats: UiStats, config=None, contas_ativas: set | None = None) -> list[DispatchItem]:
     """Abre o app; devolve os itens a despachar (lixeira/manter) ao fechar."""
-    app = ApoloApp(rows, rules_path, stats, config)
+    app = ApoloApp(rows, rules_path, stats, config, contas_ativas=contas_ativas)
     app.run()
     return app.dispatch_items

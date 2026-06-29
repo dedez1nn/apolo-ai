@@ -12,15 +12,129 @@ import sys
 import tomllib
 from pathlib import Path
 
-from apolo.actions import dispatch
+from apolo.actions import dispatch, dispatch_gmail
 from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
-from apolo.config import Config
+from apolo.config import AccountConfig, Config, load_accounts
 from apolo.fetch.imap import BridgeClient
 from apolo.notify import notify
 from apolo.rules.engine import RuleEngine
 from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
+
+
+def _gmail_run(
+    config: Config,
+    account: AccountConfig,
+    store: Storage,
+    engine: RuleEngine,
+    ollama: OllamaClient,
+    ai_ready: bool,
+) -> tuple[int, int, int, dict]:
+    """Roda fetch+classifica pra uma conta Gmail. Retorna (total_novos, analisados, revisar, acoes)."""
+    from apolo.fetch.gmail import GmailClient
+
+    conta_id = f"gmail:{account.name}"
+    token_path = config.tokens_dir / f"{account.name}.json"
+    client = GmailClient(
+        account.name,
+        account.client_id,
+        account.client_secret,
+        token_path,
+        folders=account.folders,
+    )
+
+    if not client.is_authorized():
+        print(f"[{conta_id}] conta não autorizada — execute: apolo accounts add --name {account.name}")
+        return 0, 0, 0, {}
+
+    total_novos = analisados = revisar = 0
+    acoes: dict[str, int] = {}
+
+    for pasta in account.folders:
+        meta_key = f"{conta_id}:{pasta}"
+        meta = store.get_folder_meta(meta_key)
+        last_uid = meta[1] if meta else 0
+
+        result = client.fetch_new(pasta, last_uid)
+
+        if result.resynced and meta is not None:
+            print(f"[{conta_id}/{pasta}] resync completo.")
+            store.reset_folder(meta_key)
+
+        novos_pasta = 0
+        residuo = []
+        pasta_db = f"{conta_id}:{pasta}"  # namespace único no DB
+
+        for m in result.novos:
+            if store.insert_email(
+                conta=conta_id,
+                pasta=pasta_db,
+                uidvalidity=result.uidvalidity,
+                uid=m.uid,
+                message_id=m.message_id,
+                remetente=m.remetente,
+                assunto=m.assunto,
+                data=m.data,
+                provider_id=m.provider_id,
+            ):
+                novos_pasta += 1
+
+            decisao = engine.classify(
+                remetente=m.remetente,
+                assunto=m.assunto,
+                list_unsubscribe=m.list_unsubscribe,
+            )
+            novo_status = STATUS_AGUARDANDO if decisao.precisa_revisao else STATUS_CLASSIFICADO
+            analisados += 1
+            if novo_status == STATUS_AGUARDANDO:
+                revisar += 1
+            store.classify_email(
+                pasta=pasta_db,
+                uidvalidity=result.uidvalidity,
+                uid=m.uid,
+                status=novo_status,
+                categoria=decisao.categoria,
+                acao_sugerida=decisao.acao_sugerida,
+                regra_casada=decisao.regra_casada,
+            )
+            acoes[decisao.acao_sugerida] = acoes.get(decisao.acao_sugerida, 0) + 1
+            if decisao.regra_casada == "default":
+                residuo.append(m)
+
+        if ai_ready and residuo:
+            n_ia = _ai_pass_gmail(client, store, ollama, pasta_db, result.uidvalidity, residuo)
+            print(f"[{conta_id}/{pasta}] IA classificou {n_ia}/{len(residuo)} do resíduo.")
+
+        store.set_folder_meta(meta_key, result.uidvalidity, result.ultimo_uid)
+        total_novos += novos_pasta
+        print(f"[{conta_id}/{pasta}] {novos_pasta} novo(s) (historyId={result.ultimo_uid}).")
+
+    return total_novos, analisados, revisar, acoes
+
+
+def _ai_pass_gmail(gmail_client, store, ollama, pasta_db, uidvalidity, residuo) -> int:
+    classificados = 0
+    for m in residuo:
+        try:
+            trecho = gmail_client.fetch_message(m.provider_id) if m.provider_id else ""
+            trecho = clean_for_classification(trecho)
+            decisao = ollama.classify(assunto=m.assunto, remetente=m.remetente, trecho=trecho)
+        except Exception:
+            decisao = None
+        if decisao is None:
+            continue
+        store.classify_email(
+            pasta=pasta_db,
+            uidvalidity=uidvalidity,
+            uid=m.uid,
+            status=STATUS_AGUARDANDO,
+            categoria=decisao.categoria,
+            acao_sugerida=decisao.acao,
+            regra_casada=f"ia:{decisao.categoria}",
+        )
+        classificados += 1
+    return classificados
 
 
 def cmd_run(config: Config, notify_enabled: bool = True) -> int:
@@ -119,6 +233,16 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                 store.set_folder_meta(pasta, result.uidvalidity, result.ultimo_uid)
                 total_novos += novos_pasta
                 print(f"[{pasta}] {novos_pasta} novo(s) (UID até {result.ultimo_uid}).")
+
+        # Contas Gmail adicionais (mesma conexão)
+        gmail_accounts = [a for a in load_accounts(config.accounts_path) if a.provider == "gmail"]
+        for account in gmail_accounts:
+            gn, ga, gr, gacoes = _gmail_run(config, account, store, engine, ollama, ai_ready)
+            total_novos += gn
+            analisados += ga
+            revisar += gr
+            for k, v in gacoes.items():
+                acoes[k] = acoes.get(k, 0) + v
 
         fila_total = store.count_queue()
 
@@ -229,10 +353,14 @@ def _rules_count(rules_path: Path) -> int:
 
 
 def cmd_review(config: Config) -> int:
-    """Abre o hub (UI Textual) pra despachar a fila; aplica as ações via IMAP ao sair."""
-    # Import lazy: o Textual só é carregado aqui, nunca no caminho do `apolo run`.
+    """Abre o hub (UI Textual) pra despachar a fila; aplica as ações ao sair."""
     from apolo.ui import run_ui
     from apolo.ui.app import UiStats
+
+    accounts_by_name = {
+        a.name: a for a in load_accounts(config.accounts_path) if a.provider == "gmail"
+    }
+    contas_ativas = {"proton"} | {f"gmail:{n}" for n in accounts_by_name}
 
     with Storage(config.db_path) as store:
         rows = store.fetch_queue()
@@ -243,23 +371,57 @@ def cmd_review(config: Config) -> int:
             acao_counts=store.acao_counts(),
         )
 
-        itens = run_ui(rows, config.rules_path, stats, config)
+        itens = run_ui(rows, config.rules_path, stats, config, contas_ativas=contas_ativas)
         if not itens:
             print("Nada despachado.")
             return 0
 
-        precisa_imap = any(i.acao == "lixeira" for i in itens)
-        if precisa_imap:
-            config.require_credentials()
-            with BridgeClient(
-                config.imap_host, config.imap_port, config.imap_security
-            ) as client:
-                client.login(config.username, config.password)
-                res = dispatch(client, store, itens, trash_folder=config.trash_folder)
-        else:
-            res = dispatch(_NoClient(), store, itens, trash_folder=config.trash_folder)
+        # Separa IMAP vs Gmail
+        imap_itens = [i for i in itens if i.conta == "proton"]
+        gmail_itens = [i for i in itens if i.conta.startswith("gmail:")]
 
-    print(f"Despachado: {res.lixeira} pra lixeira, {res.mantidos} mantido(s).")
+        resultado_total = 0
+        resultado_lixeira = 0
+        resultado_mantidos = 0
+
+        if imap_itens:
+            precisa_imap = any(i.acao == "lixeira" for i in imap_itens)
+            if precisa_imap:
+                config.require_credentials()
+                with BridgeClient(
+                    config.imap_host, config.imap_port, config.imap_security
+                ) as client:
+                    client.login(config.username, config.password)
+                    res = dispatch(client, store, imap_itens, trash_folder=config.trash_folder)
+            else:
+                res = dispatch(_NoClient(), store, imap_itens, trash_folder=config.trash_folder)
+            resultado_lixeira += res.lixeira
+            resultado_mantidos += res.mantidos
+
+        if gmail_itens:
+            # Agrupa por conta Gmail
+            by_conta: dict[str, list] = {}
+            for item in gmail_itens:
+                by_conta.setdefault(item.conta, []).append(item)
+            for conta_id, citens in by_conta.items():
+                name = conta_id.removeprefix("gmail:")
+                account = accounts_by_name.get(name)
+                if account is None:
+                    print(f"conta {conta_id!r} não encontrada em accounts.toml — pulado.")
+                    continue
+                token_path = config.tokens_dir / f"{name}.json"
+                res = dispatch_gmail(
+                    store,
+                    citens,
+                    name=name,
+                    client_id=account.client_id,
+                    client_secret=account.client_secret,
+                    token_path=token_path,
+                )
+                resultado_lixeira += res.lixeira
+                resultado_mantidos += res.mantidos
+
+    print(f"Despachado: {resultado_lixeira} pra lixeira, {resultado_mantidos} mantido(s).")
     return 0
 
 
@@ -317,6 +479,74 @@ def cmd_rules(config: Config) -> int:
     return 0
 
 
+def cmd_accounts_add(config: Config, name: str, provider: str, client_id: str, client_secret: str) -> int:
+    """Adiciona uma conta ao accounts.toml e inicia o fluxo de autorização OAuth2."""
+    import tomllib
+
+    path = config.accounts_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict = {}
+    if path.is_file():
+        path.chmod(0o600)
+        with path.open("rb") as f:
+            existing = tomllib.load(f)
+
+    accounts = existing.get("accounts", [])
+
+    # Verifica se já existe
+    for acc in accounts:
+        if acc.get("name") == name:
+            print(f"Conta '{name}' já existe em {path}.")
+            # Ainda permite reautorizar
+            break
+    else:
+        accounts.append({
+            "name": name,
+            "provider": provider,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "folders": ["INBOX"],
+        })
+        existing["accounts"] = accounts
+        lines = ["[[accounts]]"]
+        for acc in existing["accounts"]:
+            if lines[-1] != "[[accounts]]":
+                lines.append("")
+                lines.append("[[accounts]]")
+            lines.append(f'name = "{acc["name"]}"')
+            lines.append(f'provider = "{acc["provider"]}"')
+            lines.append(f'client_id = "{acc["client_id"]}"')
+            lines.append(f'client_secret = "{acc["client_secret"]}"')
+            lines.append(f'folders = {acc["folders"]!r}')
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        path.chmod(0o600)
+        print(f"Conta '{name}' adicionada em {path}.")
+
+    if provider == "gmail":
+        from apolo.fetch.gmail import GmailClient
+
+        token_path = config.tokens_dir / f"{name}.json"
+        client = GmailClient(name, client_id, client_secret, token_path)
+        if client.is_authorized():
+            print(f"Conta '{name}' já está autorizada.")
+        else:
+            client.authorize()
+    return 0
+
+
+def cmd_accounts_list(config: Config) -> int:
+    accounts = load_accounts(config.accounts_path)
+    if not accounts:
+        print(f"Nenhuma conta em {config.accounts_path}")
+        return 0
+    for acc in accounts:
+        token_path = config.tokens_dir / f"{acc.name}.json"
+        status = "autorizada" if token_path.is_file() else "NÃO autorizada"
+        print(f"  {acc.name}  ({acc.provider})  — {status}")
+    return 0
+
+
 def cmd_setup(config: Config, interval: str, enable: bool = True) -> int:
     """Renderiza as units do systemd (user) e ativa o timer.
 
@@ -362,6 +592,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-enable", action="store_true", help="escreve as units sem ativar o timer."
     )
 
+    p_accounts = sub.add_parser("accounts", help="gerencia contas externas (Gmail, etc.).")
+    accsub = p_accounts.add_subparsers(dest="acc_comando", required=True)
+    accsub.add_parser("list", help="lista contas configuradas.")
+    p_acc_add = accsub.add_parser("add", help="adiciona conta e autoriza via OAuth2.")
+    p_acc_add.add_argument("--name", required=True, help="identificador da conta (ex.: pessoal).")
+    p_acc_add.add_argument("--provider", default="gmail", choices=["gmail"], help="provedor.")
+    p_acc_add.add_argument("--client-id", required=True, dest="client_id", help="OAuth2 client_id.")
+    p_acc_add.add_argument("--client-secret", required=True, dest="client_secret", help="OAuth2 client_secret.")
+
     p_block = sub.add_parser("block", help="adiciona remetente/domínio à blocklist.")
     p_block.add_argument("valor", help="email ou domínio (ex.: promo.x.com).")
     p_allow = sub.add_parser("allow", help="adiciona remetente/domínio à allowlist.")
@@ -388,10 +627,21 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_review(config)
         if args.comando == "rules":
             return cmd_rules(config)
+        if args.comando == "accounts":
+            if args.acc_comando == "list":
+                return cmd_accounts_list(config)
+            if args.acc_comando == "add":
+                return cmd_accounts_add(config, args.name, args.provider, args.client_id, args.client_secret)
         if args.comando == "block":
             return cmd_block(config, args.valor, args.tipo)
         if args.comando == "allow":
             return cmd_allow(config, args.valor, args.tipo)
+    except ConnectionRefusedError as e:
+        # Bridge fora / ainda subindo: falha temporária, não erro de verdade.
+        # 75 = EX_TEMPFAIL; o apolo.service o lista em SuccessExitStatus pra não
+        # marcar a unidade como 'failed' — a próxima passada do timer reentará.
+        print(f"Bridge indisponível: {e}", file=sys.stderr)
+        return 75
     except Exception as e:
         print(f"erro: {e}", file=sys.stderr)
         return 1
