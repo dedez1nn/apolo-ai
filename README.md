@@ -178,13 +178,20 @@ importa.
 Na fila (`aguardando`), cada email já vem com a ação sugerida pela cascata:
 
 ```
-↑/↓ mover   d lixeira   m manter   b block   a allow   u desfazer   ↵ aplicar   esc voltar
+↑/↓ mover   d lixeira   m manter   b block   a allow   c código   u desfazer   ↵ aplicar   esc voltar
 ```
 
 `b`/`a` são o **loop de aprendizado**: gravam o domínio do remetente na
 block/allowlist na hora (via `apolo/rules/writer.py`, que preserva os comentários
 do TOML e valida antes de salvar) e ajustam a ação do item; `u` desfaz (e remove
 a regra recém-criada).
+
+`c` **pega o código**: para emails de confirmação, puxa o corpo do item
+selecionado (Proton via Bridge, Gmail via API — `BODY.PEEK`, sem marcar lido) e
+extrai candidatos a **código** (6 dígitos, com ou sem `-`, ou alfanumérico) e
+**links de confirmação** (`apolo/extract.py`). Um modal lista por confiança e o
+`enter` copia o escolhido pro clipboard (`wl-copy`/`xclip`/`xsel`) — útil pra
+colar o OTP sem abrir o email no cliente.
 
 Ao apertar **enter**, a UI volta ao hub e o dispatch aplica as decisões: itens `manter`
 só saem da fila; itens `lixeira` são movidos pra Trash. Como o Bridge não tem

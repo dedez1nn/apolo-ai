@@ -151,6 +151,47 @@ def dispatch_gmail(
     return result
 
 
+def fetch_body(config, item) -> str:
+    """Busca o corpo de um email da fila e devolve texto limpo (best-effort).
+
+    `item` é duck-typed (o Item da UI serve): precisa de `.conta`, `.pasta`,
+    `.uid` e `.provider_id`. Proton via Bridge (IMAP, BODY.PEEK — não marca lido);
+    Gmail via API (format=raw). Usado pela UI pra extrair código/link sem abrir o
+    email no cliente. Devolve '' se não der.
+    """
+    from apolo.clean import message_to_text
+
+    if item.conta == "proton":
+        config.require_credentials()
+        with BridgeClient(config.imap_host, config.imap_port, config.imap_security) as client:
+            client.login(config.username, config.password)
+            msg = client.fetch_message_from(item.pasta, item.uid)
+        return message_to_text(msg) if msg else ""
+
+    if item.conta.startswith("gmail:"):
+        from apolo.config import load_accounts
+        from apolo.fetch.gmail import GmailClient
+
+        if not item.provider_id:
+            return ""
+        name = item.conta.removeprefix("gmail:")
+        account = next(
+            (a for a in load_accounts(config.accounts_path)
+             if a.provider == "gmail" and a.name == name),
+            None,
+        )
+        if account is None:
+            return ""
+        client = GmailClient(
+            name, account.client_id, account.client_secret,
+            config.tokens_dir / f"{name}.json",
+        )
+        msg = client.fetch_raw(item.provider_id)
+        return message_to_text(msg) if msg else ""
+
+    return ""
+
+
 class _NoClient:
     """Sentinela: usado quando nenhum item vai pra lixeira (sem IMAP)."""
 

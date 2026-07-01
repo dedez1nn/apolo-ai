@@ -57,11 +57,17 @@ A fila de revisão (`aguardando`) repaginada. Cada email mostra a ação sugerid
 (cor + ícone), remetente, data e assunto.
 
 ```
-d lixeira   m manter   b block   a allow   u desfazer   ↵ aplicar   esc voltar
+d lixeira   m manter   b block   a allow   c código   u desfazer   ↵ aplicar   esc voltar
 ```
 
 - Decidir (`d`/`m`/`b`/`a`) **tira o email da lista na hora** (vai pra uma pilha de
   histórico da sessão); `u` desfaz a última.
+- `c` **pega o código**: puxa o corpo do email selecionado (Proton via Bridge,
+  Gmail via API — `BODY.PEEK`, não marca lido) e extrai candidatos a **código de
+  confirmação** (6 dígitos, com ou sem `-`, ou alfanumérico) e **links de
+  confirmação** (`apolo/extract.py`). Um modal lista os candidatos por confiança;
+  `↵` copia o escolhido pro clipboard (`wl-copy`/`xclip`/`xsel`), `esc` fecha. É a
+  única ação da fila que toca a rede na hora, junto do `↵` aplicar.
 - `b`/`a` são o **loop de aprendizado**: gravam o *domínio* do remetente na
   block/allowlist na hora (via `rules/writer.py`) e ajustam a ação do item; `u`
   também remove a regra recém-criada.
