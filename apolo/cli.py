@@ -20,6 +20,7 @@ from apolo.notify import notify
 from apolo.rules.engine import RuleEngine
 from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
+from apolo.verify import VerifyConfig, apply_ia_decision
 
 
 def _gmail_run(
@@ -29,8 +30,9 @@ def _gmail_run(
     engine: RuleEngine,
     ollama: OllamaClient,
     ai_ready: bool,
-) -> tuple[int, int, int, dict]:
-    """Roda fetch+classifica pra uma conta Gmail. Retorna (total_novos, analisados, revisar, acoes)."""
+    verify_config: VerifyConfig,
+) -> tuple[int, int, int, int, dict]:
+    """Roda fetch+classifica pra uma conta Gmail. Retorna (total_novos, analisados, revisar, preservados, acoes)."""
     from apolo.fetch.gmail import GmailClient
 
     conta_id = f"gmail:{account.name}"
@@ -45,9 +47,9 @@ def _gmail_run(
 
     if not client.is_authorized():
         print(f"[{conta_id}] conta não autorizada — execute: apolo accounts add --name {account.name}")
-        return 0, 0, 0, {}
+        return 0, 0, 0, 0, {}
 
-    total_novos = analisados = revisar = 0
+    total_novos = analisados = revisar = preservados = 0
     acoes: dict[str, int] = {}
 
     for pasta in account.folders:
@@ -57,13 +59,17 @@ def _gmail_run(
 
         result = client.fetch_new(pasta, last_uid)
 
+        pasta_db = f"{conta_id}:{pasta}"  # namespace único no DB
+
+        # Decisões já tomadas (por message_id) preservadas através do resync.
+        decididos: dict[str, str] = {}
         if result.resynced and meta is not None:
             print(f"[{conta_id}/{pasta}] resync completo.")
+            decididos = store.decided_message_ids(pasta_db)  # ANTES de apagar
             store.reset_folder(meta_key)
 
         novos_pasta = 0
         residuo = []
-        pasta_db = f"{conta_id}:{pasta}"  # namespace único no DB
 
         for m in result.novos:
             if store.insert_email(
@@ -78,6 +84,19 @@ def _gmail_run(
                 provider_id=m.provider_id,
             ):
                 novos_pasta += 1
+
+            # Já despachado antes (sobreviveu ao resync via message_id): não
+            # re-enfileira.
+            mid = (m.message_id or "").strip()
+            if mid and mid in decididos:
+                store.mark_dispatched(
+                    pasta=pasta_db,
+                    uidvalidity=result.uidvalidity,
+                    uid=m.uid,
+                    acao_aplicada=decididos[mid] or "manter",
+                )
+                preservados += 1
+                continue
 
             decisao = engine.classify(
                 remetente=m.remetente,
@@ -102,23 +121,34 @@ def _gmail_run(
                 residuo.append(m)
 
         if ai_ready and residuo:
-            n_ia = _ai_pass_gmail(client, store, ollama, pasta_db, result.uidvalidity, residuo)
+            n_ia = _ai_pass_gmail(client, store, ollama, verify_config, pasta_db, result.uidvalidity, residuo)
             print(f"[{conta_id}/{pasta}] IA classificou {n_ia}/{len(residuo)} do resíduo.")
+
+        # Reconciliação: pendentes que já saíram da INBOX por fora do Apolo
+        # (lixeira/arquivado direto no Gmail) saem da fila aqui. Pulado num
+        # resync: reset_folder já zerou o estado da pasta.
+        if not result.resynced:
+            label = "INBOX" if pasta.upper() == "INBOX" else pasta
+            removidos = _reconciliar_gmail(client, store, pasta_db, label)
+            if removidos:
+                print(f"[{conta_id}/{pasta}] {removidos} email(s) saíram da INBOX por fora — removido(s) da fila.")
 
         store.set_folder_meta(meta_key, result.uidvalidity, result.ultimo_uid)
         total_novos += novos_pasta
         print(f"[{conta_id}/{pasta}] {novos_pasta} novo(s) (historyId={result.ultimo_uid}).")
 
-    return total_novos, analisados, revisar, acoes
+    return total_novos, analisados, revisar, preservados, acoes
 
 
-def _ai_pass_gmail(gmail_client, store, ollama, pasta_db, uidvalidity, residuo) -> int:
+def _ai_pass_gmail(gmail_client, store, ollama, verify_config, pasta_db, uidvalidity, residuo) -> int:
     classificados = 0
     for m in residuo:
         try:
             trecho = gmail_client.fetch_message(m.provider_id) if m.provider_id else ""
             trecho = clean_for_classification(trecho)
-            decisao = ollama.classify(assunto=m.assunto, remetente=m.remetente, trecho=trecho)
+            decisao = apply_ia_decision(
+                ollama, verify_config, assunto=m.assunto, remetente=m.remetente, trecho=trecho
+            )
         except Exception:
             decisao = None
         if decisao is None:
@@ -136,18 +166,124 @@ def _ai_pass_gmail(gmail_client, store, ollama, pasta_db, uidvalidity, residuo) 
     return classificados
 
 
+def _retry_stuck_ai(
+    config: Config,
+    store: Storage,
+    ollama: OllamaClient,
+    verify_config: VerifyConfig,
+    *,
+    client: BridgeClient | None = None,
+) -> int:
+    """Reclassifica pelo Ollama pendentes que a cascata deixou em 'default' mas
+    que nunca chegaram a passar pela IA (ver Storage.stuck_default_rows).
+
+    Reusa a conexão IMAP já aberta se `client` for passado (chamada dentro de
+    cmd_run); senão abre a dela própria (chamada avulsa, ex.: botão do Hub).
+    """
+    rows = store.stuck_default_rows()
+    if not rows:
+        return 0
+
+    proton_rows = [r for r in rows if r["conta"] == "proton"]
+    gmail_rows = [r for r in rows if r["conta"].startswith("gmail:")]
+
+    total = 0
+    if proton_rows:
+        if client is not None:
+            total += _retry_proton_rows(client, store, ollama, verify_config, proton_rows)
+        else:
+            config.require_credentials()
+            with BridgeClient(config.imap_host, config.imap_port, config.imap_security) as c:
+                c.login(config.username, config.password)
+                total += _retry_proton_rows(c, store, ollama, verify_config, proton_rows)
+
+    if gmail_rows:
+        accounts_by_name = {
+            a.name: a for a in load_accounts(config.accounts_path) if a.provider == "gmail"
+        }
+        total += _retry_gmail_rows(config, store, ollama, verify_config, gmail_rows, accounts_by_name)
+
+    return total
+
+
+def _retry_proton_rows(client, store: Storage, ollama: OllamaClient, verify_config: VerifyConfig, rows) -> int:
+    n = 0
+    for r in rows:
+        try:
+            msg = client.fetch_message_from(r["pasta"], r["uid"])
+            trecho = clean_for_classification(message_to_text(msg)) if msg else ""
+            decisao = apply_ia_decision(
+                ollama, verify_config, assunto=r["assunto"], remetente=r["remetente"], trecho=trecho
+            )
+        except Exception:
+            decisao = None
+        if decisao is None:
+            continue
+        store.classify_email(
+            pasta=r["pasta"], uidvalidity=r["uidvalidity"], uid=r["uid"],
+            status=STATUS_AGUARDANDO, categoria=decisao.categoria,
+            acao_sugerida=decisao.acao, regra_casada=f"ia:{decisao.categoria}",
+        )
+        n += 1
+    return n
+
+
+def _retry_gmail_rows(
+    config: Config, store: Storage, ollama: OllamaClient, verify_config: VerifyConfig, rows, accounts_by_name
+) -> int:
+    from apolo.fetch.gmail import GmailClient
+
+    clients: dict[str, GmailClient] = {}
+    n = 0
+    for r in rows:
+        name = r["conta"].removeprefix("gmail:")
+        if name not in clients:
+            account = accounts_by_name.get(name)
+            if account is None:
+                continue
+            clients[name] = GmailClient(
+                name, account.client_id, account.client_secret,
+                config.tokens_dir / f"{name}.json",
+            )
+        gclient = clients[name]
+        if not r["provider_id"]:
+            continue
+        try:
+            trecho = clean_for_classification(gclient.fetch_message(r["provider_id"]))
+            decisao = apply_ia_decision(
+                ollama, verify_config, assunto=r["assunto"], remetente=r["remetente"], trecho=trecho
+            )
+        except Exception:
+            decisao = None
+        if decisao is None:
+            continue
+        store.classify_email(
+            pasta=r["pasta"], uidvalidity=r["uidvalidity"], uid=r["uid"],
+            status=STATUS_AGUARDANDO, categoria=decisao.categoria,
+            acao_sugerida=decisao.acao, regra_casada=f"ia:{decisao.categoria}",
+        )
+        n += 1
+    return n
+
+
+def cmd_retry_ia(config: Config) -> int:
+    """Chamada avulsa: só reclassifica pendentes presos, sem buscar emails novos."""
+    ollama = OllamaClient(config.ollama_url, config.ollama_model, keep_alive=config.ollama_keep_alive)
+    if not ollama.available():
+        print("Ollama indisponível — nada a fazer.")
+        return 0
+    verify_config = VerifyConfig.from_file(config.rules_path)
+    with Storage(config.db_path) as store:
+        n = _retry_stuck_ai(config, store, ollama, verify_config)
+    print(f"{n} pendente(s) reclassificado(s).")
+    return 0
+
+
 def cmd_run(config: Config, notify_enabled: bool = True) -> int:
     """Uma passada: busca os novos, classifica pela cascata e manda o resíduo pra IA."""
     config.require_credentials()
     engine = RuleEngine.from_file(config.rules_path)
-
-    # "Analisando…" abre a notificação; o resumo no fim a substitui (replace_id),
-    # então fica uma só na tela em vez de empilhar duas por execução.
-    nid = (
-        notify("Apolo", "Analisando emails novos…", urgency="low")
-        if notify_enabled
-        else None
-    )
+    verify_config = VerifyConfig.from_file(config.rules_path)
 
     # A IA é opcional: se o Ollama estiver fora, o resíduo só fica em 'revisar'.
     ollama = OllamaClient(
@@ -157,16 +293,24 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
     if config.ai_enabled and not ai_ready:
         print("IA indisponível (Ollama fora do ar) — resíduo fica como 'revisar'.")
 
+    # "Analisando…" só abre DEPOIS que o Bridge conecta (ver dentro do `with`):
+    # com o Bridge fora, o __enter__ levanta antes e nada aparece na tela. O
+    # resumo no fim substitui esta (replace_id), então fica uma só por execução.
+    nid: int | None = None
     total_novos = 0
     analisados = 0  # todos os emails percorridos nesta passada (pro resumo)
     revisar = 0  # foram pra fila (aguardando)
     mantidos = 0  # terminaram como 'classificado' (sem ação)
+    preservados = 0  # já decididos antes; carregados sem voltar pra fila (resync)
     fila_total = 0
     acoes: dict[str, int] = {}
     with Storage(config.db_path) as store:
         with BridgeClient(
             config.imap_host, config.imap_port, config.imap_security
         ) as client:
+            # Bridge respondeu (o __enter__ conectou): agora vale avisar na tela.
+            if notify_enabled:
+                nid = notify("Apolo", "Analisando emails novos…", urgency="low")
             client.login(config.username, config.password)
 
             for pasta in config.folders:
@@ -176,9 +320,13 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
 
                 result = client.fetch_new(pasta, known_uidvalidity, last_uid)
 
+                # Decisões já tomadas (por message_id) — preservadas se houver
+                # resync, pra um email já despachado não voltar pra fila só
+                # porque o Bridge trocou os UIDs.
+                decididos: dict[str, str] = {}
                 if result.resynced and meta is not None:
-                    # UIDVALIDITY mudou: zera o estado da pasta antes de regravar.
                     print(f"[{pasta}] UIDVALIDITY mudou — ressincronizando.")
+                    decididos = store.decided_message_ids(pasta)  # ANTES de apagar
                     store.reset_folder(pasta)
 
                 novos_pasta = 0
@@ -194,6 +342,19 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                         data=m.data,
                     ):
                         novos_pasta += 1
+
+                    # Já despachado num ciclo anterior (sobreviveu ao resync via
+                    # message_id): re-grava como despachado e NÃO re-enfileira.
+                    mid = (m.message_id or "").strip()
+                    if mid and mid in decididos:
+                        store.mark_dispatched(
+                            pasta=pasta,
+                            uidvalidity=result.uidvalidity,
+                            uid=m.uid,
+                            acao_aplicada=decididos[mid] or "manter",
+                        )
+                        preservados += 1
+                        continue
 
                     # Cascata determinística (sem IA). Tudo é sugestão: 'manter'
                     # é terminal; o resto entra na fila de revisão (aguardando).
@@ -226,8 +387,17 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                 # 2ª passada: só o resíduo vai pro Ollama (já quente). A pasta
                 # segue selecionada do fetch_new, então fetch_message funciona.
                 if ai_ready and residuo:
-                    n_ia = _ai_pass(client, store, ollama, pasta, result.uidvalidity, residuo)
+                    n_ia = _ai_pass(client, store, ollama, verify_config, pasta, result.uidvalidity, residuo)
                     print(f"[{pasta}] IA classificou {n_ia}/{len(residuo)} do resíduo.")
+
+                # Reconciliação: o que ainda está pendente no banco mas já saiu
+                # da pasta de origem (lixeira/movido por fora do Apolo) sai da
+                # fila aqui — não faz sentido revisar algo que já não está mais
+                # lá. Pulado num resync: reset_folder já zerou o estado da pasta.
+                if not result.resynced:
+                    removidos = _reconciliar_imap(client, store, pasta)
+                    if removidos:
+                        print(f"[{pasta}] {removidos} email(s) saíram da pasta por fora — removido(s) da fila.")
 
                 store.set_folder_meta(pasta, result.uidvalidity, result.ultimo_uid)
                 total_novos += novos_pasta
@@ -236,16 +406,27 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
         # Contas Gmail adicionais (mesma conexão)
         gmail_accounts = [a for a in load_accounts(config.accounts_path) if a.provider == "gmail"]
         for account in gmail_accounts:
-            gn, ga, gr, gacoes = _gmail_run(config, account, store, engine, ollama, ai_ready)
+            gn, ga, gr, gp, gacoes = _gmail_run(config, account, store, engine, ollama, ai_ready, verify_config)
             total_novos += gn
             analisados += ga
             revisar += gr
+            preservados += gp
             for k, v in gacoes.items():
                 acoes[k] = acoes.get(k, 0) + v
+
+        # Pendentes presos numa passada anterior sem IA (Ollama estava fora do
+        # ar naquela hora): tenta de novo agora que ele já respondeu acima.
+        retried = 0
+        if ai_ready:
+            retried = _retry_stuck_ai(config, store, ollama, verify_config)
+            if retried:
+                print(f"IA reclassificou {retried} pendente(s) que ainda não tinham passado por ela.")
 
         fila_total = store.count_queue()
 
     print(f"\n{total_novos} email(s) novo(s).")
+    if preservados:
+        print(f"{preservados} já decidido(s) antes — preservado(s) no resync (não voltaram pra fila).")
     if acoes:
         resumo = ", ".join(f"{n} {acao}" for acao, n in sorted(acoes.items()))
         print(f"Sugestões da cascata: {resumo}.")
@@ -283,7 +464,7 @@ def _notify_resumo(
     )
 
 
-def _ai_pass(client, store, ollama, pasta, uidvalidity, residuo) -> int:
+def _ai_pass(client, store, ollama, verify_config, pasta, uidvalidity, residuo) -> int:
     """Classifica o resíduo pelo Ollama: corpo limpo -> sugestão. Falha por email é ignorada.
 
     A IA só enriquece a sugestão; o email continua na fila (aguardando) pro dono
@@ -294,8 +475,8 @@ def _ai_pass(client, store, ollama, pasta, uidvalidity, residuo) -> int:
         try:
             msg = client.fetch_message(m.uid)
             trecho = clean_for_classification(message_to_text(msg)) if msg else ""
-            decisao = ollama.classify(
-                assunto=m.assunto, remetente=m.remetente, trecho=trecho
+            decisao = apply_ia_decision(
+                ollama, verify_config, assunto=m.assunto, remetente=m.remetente, trecho=trecho
             )
         except Exception:
             decisao = None
@@ -312,6 +493,42 @@ def _ai_pass(client, store, ollama, pasta, uidvalidity, residuo) -> int:
         )
         classificados += 1
     return classificados
+
+
+def _reconciliar_imap(client, store, pasta: str) -> int:
+    """Confere se os pendentes dessa pasta ainda existem lá; marca os sumidos.
+
+    Um único UID SEARCH cobre o lote — sem custo por mensagem. Devolve quantos
+    foram removidos da fila.
+    """
+    pendentes = store.pending_rows(pasta)
+    if not pendentes:
+        return 0
+    presentes = client.uids_presentes(pasta, [r["uid"] for r in pendentes])
+    removidos = 0
+    for r in pendentes:
+        if r["uid"] not in presentes:
+            store.mark_removed(pasta=pasta, uidvalidity=r["uidvalidity"], uid=r["uid"])
+            removidos += 1
+    return removidos
+
+
+def _reconciliar_gmail(client, store, pasta_db: str, label: str) -> int:
+    """Mesma ideia da reconciliação IMAP, via labelIds do Gmail.
+
+    Checa só o que está pendente no banco (não a INBOX inteira) — um GET por
+    mensagem com format=minimal.
+    """
+    pendentes = [r for r in store.pending_rows(pasta_db) if r["provider_id"]]
+    if not pendentes:
+        return 0
+    presentes = client.uids_presentes([r["provider_id"] for r in pendentes], label=label)
+    removidos = 0
+    for r in pendentes:
+        if r["provider_id"] not in presentes:
+            store.mark_removed(pasta=pasta_db, uidvalidity=r["uidvalidity"], uid=r["uid"])
+            removidos += 1
+    return removidos
 
 
 def cmd_status(config: Config) -> int:
@@ -499,6 +716,52 @@ def cmd_accounts_list(config: Config) -> int:
     return 0
 
 
+def cmd_repair_gmail(config: Config) -> int:
+    """Re-busca cabeçalhos (From/Subject/Date) de emails Gmail gravados com remetente vazio."""
+    from apolo.fetch.gmail import GmailClient
+
+    accounts = [a for a in load_accounts(config.accounts_path) if a.provider == "gmail"]
+    if not accounts:
+        print("Nenhuma conta Gmail configurada.")
+        return 0
+
+    total_corrigidos = 0
+    total_falhas = 0
+
+    with Storage(config.db_path) as store:
+        for account in accounts:
+            conta_prefix = f"gmail:{account.name}"
+            rows = store.emails_sem_remetente(conta_prefix)
+            if not rows:
+                print(f"[{conta_prefix}] Nenhum email com remetente vazio.")
+                continue
+
+            print(f"[{conta_prefix}] {len(rows)} email(s) para reparar…")
+            token_path = config.tokens_dir / f"{account.name}.json"
+            client = GmailClient(
+                account.name, account.client_id, account.client_secret, token_path
+            )
+
+            for row in rows:
+                fetched = client._fetch_headers(row["provider_id"], client._ensure_token())
+                if fetched is None:
+                    print(f"  aviso: não consegui buscar {row['provider_id']!r}")
+                    total_falhas += 1
+                    continue
+                store.update_email_headers(
+                    pasta=row["pasta"],
+                    uidvalidity=row["uidvalidity"],
+                    uid=row["uid"],
+                    remetente=fetched.remetente or "",
+                    assunto=fetched.assunto or "",
+                    data=fetched.data or "",
+                )
+                total_corrigidos += 1
+
+    print(f"\nTotal: {total_corrigidos} corrigido(s), {total_falhas} falha(s).")
+    return 0
+
+
 def cmd_setup(config: Config, interval: str, enable: bool = True) -> int:
     """Renderiza as units do systemd (user) e ativa o timer.
 
@@ -535,6 +798,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="última execução, contadores.")
     sub.add_parser("review", help="abre a TUI pra despachar a fila de revisão.")
     sub.add_parser("rules", help="lista as regras configuradas.")
+    sub.add_parser(
+        "retry-ia",
+        help="reclassifica pela IA pendentes presos em 'default' que nunca passaram por ela (sem buscar emails novos).",
+    )
 
     p_setup = sub.add_parser("setup", help="instala/atualiza o timer do systemd (user).")
     p_setup.add_argument(
@@ -552,6 +819,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_acc_add.add_argument("--provider", default="gmail", choices=["gmail"], help="provedor.")
     p_acc_add.add_argument("--client-id", required=True, dest="client_id", help="OAuth2 client_id.")
     p_acc_add.add_argument("--client-secret", required=True, dest="client_secret", help="OAuth2 client_secret.")
+
+    sub.add_parser(
+        "repair-gmail",
+        help="re-busca cabeçalhos (remetente/assunto) de emails Gmail gravados com dados vazios.",
+    )
 
     p_block = sub.add_parser("block", help="adiciona remetente/domínio à blocklist.")
     p_block.add_argument("valor", help="email ou domínio (ex.: promo.x.com).")
@@ -579,11 +851,15 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_review(config)
         if args.comando == "rules":
             return cmd_rules(config)
+        if args.comando == "retry-ia":
+            return cmd_retry_ia(config)
         if args.comando == "accounts":
             if args.acc_comando == "list":
                 return cmd_accounts_list(config)
             if args.acc_comando == "add":
                 return cmd_accounts_add(config, args.name, args.provider, args.client_id, args.client_secret)
+        if args.comando == "repair-gmail":
+            return cmd_repair_gmail(config)
         if args.comando == "block":
             return cmd_block(config, args.valor, args.tipo)
         if args.comando == "allow":
