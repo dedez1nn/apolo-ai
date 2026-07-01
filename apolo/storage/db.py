@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS meta (
     uidvalidity INTEGER NOT NULL,
     ultimo_uid  INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS sugestoes_ignoradas (
+    chave      TEXT PRIMARY KEY,
+    criado_em  TEXT NOT NULL
+);
 """
 
 
@@ -271,6 +276,31 @@ class Storage:
             "SELECT MAX(processado_em) AS m FROM emails"
         ).fetchone()
         return row["m"] if row else None
+
+    # ----- sugestões (histórico de despacho -> candidatas a regra) -----
+    def dispatched_rows(self) -> list[sqlite3.Row]:
+        """Matéria-prima do motor de sugestões (apolo.suggest): tudo que já foi
+        despachado, com a ação que o dono efetivamente aplicou.
+        """
+        return self.conn.execute(
+            """
+            SELECT remetente, assunto, acao_aplicada, processado_em
+              FROM emails
+             WHERE status = ? AND acao_aplicada IS NOT NULL
+            """,
+            (STATUS_DESPACHADO,),
+        ).fetchall()
+
+    def sugestoes_ignoradas(self) -> set[str]:
+        rows = self.conn.execute("SELECT chave FROM sugestoes_ignoradas").fetchall()
+        return {r["chave"] for r in rows}
+
+    def ignorar_sugestao(self, chave: str) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO sugestoes_ignoradas (chave, criado_em) VALUES (?, ?)",
+                (chave, _now()),
+            )
 
     # ----- fila de revisão (TUI) -----
     def fetch_queue(self) -> list[sqlite3.Row]:

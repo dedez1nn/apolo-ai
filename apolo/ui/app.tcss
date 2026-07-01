@@ -207,6 +207,29 @@ Screen {
     width: 100%;
 }
 
+/* ======================= SUGESTÕES ======================= */
+#sug-list {
+    height: 1fr;
+    width: 100%;
+    padding: 1 2;
+}
+
+.sug-row {
+    height: auto;
+    align: left middle;
+    padding: 0 0 1 0;
+}
+
+.sug-txt {
+    width: 1fr;
+    height: auto;
+}
+
+.sug-switch {
+    width: auto;
+    margin-left: 2;
+}
+
 /* ======================= CONFIGURAÇÕES ======================= */
 #cfg {
     width: 100%;

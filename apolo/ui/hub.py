@@ -39,6 +39,7 @@ _MENU = [
     ("review",  "✉", "Revisar fila"),
     ("add_rule", "+", "Adicionar regra"),
     ("preview", "◎", "Prévia — o que as regras pegariam"),
+    ("sugestoes", "✦", "Sugestões (baseado no seu histórico)"),
     ("rules",   "▤", "Regras configuradas"),
     ("run",     "▶", "Rodar agora (uma passada)"),
     ("retry_ia", "↻", "Reclassificar pendentes (IA)"),
@@ -191,6 +192,17 @@ class HubScreen(Screen):
             f"\n[{INK_DIM}]Simulação offline · Enter para o detalhe por regra[/]",
         ]
         return cab + "\n".join(linhas)
+
+    def _det_sugestoes(self) -> str:
+        return (
+            self._titulo_det("Sugestões")
+            + f"\n[{INK_DIM}]Olha o que você já decidiu no passado (lixeira/manter\n"
+            f"aplicados de verdade) e propõe promover um padrão\n"
+            f"consistente — mesmo domínio, ou domínio com o mesmo\n"
+            f"assunto se repetindo — a regra permanente.\n\n"
+            f"Nada é aplicado sozinho: cada dica tem um interruptor,\n"
+            f"e só vira regra quando você sai da tela.[/]"
+        )
 
     def _det_rules(self) -> str:
         from apolo.rules.writer import list_entries
@@ -362,6 +374,19 @@ class HubScreen(Screen):
             from apolo.ui.preview import PreviewScreen
 
             self.app.push_screen(PreviewScreen())
+        elif key == "sugestoes":
+            if not self.app.config:
+                self.notify("Configuração não carregada.", severity="error")
+                return
+
+            def _cb_sugestoes(resultado: str | None) -> None:
+                if resultado:
+                    self.notify(resultado, title="apolo sugestões")
+                self._atualizar()
+
+            from apolo.ui.suggest_screen import SuggestionsScreen
+
+            self.app.push_screen(SuggestionsScreen(), _cb_sugestoes)
         elif key == "rules":
             from apolo.ui.rules_screen import RulesScreen
 
