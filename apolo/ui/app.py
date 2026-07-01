@@ -40,6 +40,12 @@ class ApoloApp(App):
 
     def __init__(self, rows, rules_path: Path, stats: UiStats, config=None, contas_ativas: set | None = None):
         super().__init__()
+        # Registra o tema ANTES do parse do TCSS — o CSS usa variáveis do tema
+        # ($edge, $lixeira, $manter, $revisar), que precisam existir já no parse.
+        from apolo.ui.theme import APOLO_THEME
+
+        self.register_theme(APOLO_THEME)
+        self.theme = "apolo-glass"
         # Fila compartilhada: as telas mutam esta lista (decidir/desfazer).
         self.queue: list[Item] = [Item(r) for r in rows]
         self.rules_path = Path(rules_path)
@@ -50,7 +56,6 @@ class ApoloApp(App):
         self._contas_ativas: set[str] = contas_ativas or {"proton"}
 
     def on_mount(self) -> None:
-        self.theme = "textual-dark"
         self.push_screen(HubScreen())
 
 
