@@ -16,11 +16,14 @@ from pathlib import Path
 
 # Estados válidos do ciclo de vida (apolo.md):
 # novo -> classificado -> (auto: executado | revisão: aguardando -> despachado)
+# removido: saiu da pasta de origem por fora do Apolo (lixeira/arquivado
+# direto no Gmail/Proton) — descoberto na reconciliação da próxima varredura.
 STATUS_NOVO = "novo"
 STATUS_CLASSIFICADO = "classificado"
 STATUS_EXECUTADO = "executado"
 STATUS_AGUARDANDO = "aguardando"
 STATUS_DESPACHADO = "despachado"
+STATUS_REMOVIDO = "removido"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS emails (
@@ -140,6 +143,27 @@ class Storage:
                 """,
                 (pasta, uidvalidity, ultimo_uid),
             )
+
+    def decided_message_ids(self, pasta: str) -> dict[str, str]:
+        """message_id -> acao_aplicada dos emails JÁ despachados nesta pasta.
+
+        Usado pra preservar decisões através de um resync: quando o Bridge troca
+        o UIDVALIDITY, os UIDs mudam mas o message_id não. Um email que o dono já
+        mandou pra lixeira / manteve não deve voltar pra fila só por isso. Capture
+        ANTES de reset_folder (que apaga as linhas).
+        """
+        rows = self.conn.execute(
+            """
+            SELECT message_id, acao_aplicada FROM emails
+             WHERE pasta = ? AND status = ? AND message_id IS NOT NULL
+            """,
+            (pasta, STATUS_DESPACHADO),
+        ).fetchall()
+        return {
+            r["message_id"].strip(): (r["acao_aplicada"] or "")
+            for r in rows
+            if (r["message_id"] or "").strip()
+        }
 
     def reset_folder(self, pasta: str) -> None:
         """UIDVALIDITY mudou: descarta o estado daquela pasta pra ressincronizar."""
@@ -280,6 +304,34 @@ class Storage:
                  WHERE pasta = ? AND uidvalidity = ? AND uid = ?
                 """,
                 (STATUS_DESPACHADO, acao_aplicada, _now(), pasta, uidvalidity, uid),
+            )
+
+    # ----- reconciliação (passo: a pasta real pode ter mudado por fora) -----
+    def pending_rows(self, pasta: str) -> list[sqlite3.Row]:
+        """Emails dessa pasta ainda 'vivos' (nem despachados, nem já marcados como
+        removidos) — candidatos a checar se ainda existem na pasta de origem.
+        """
+        return self.conn.execute(
+            """
+            SELECT uid, uidvalidity, provider_id FROM emails
+             WHERE pasta = ? AND status NOT IN (?, ?)
+            """,
+            (pasta, STATUS_DESPACHADO, STATUS_REMOVIDO),
+        ).fetchall()
+
+    def mark_removed(self, *, pasta: str, uidvalidity: int, uid: int) -> None:
+        """Email saiu da pasta de origem por fora do Apolo (lixeira/arquivado
+        direto no Gmail/Proton): sai da fila sem virar 'despachado' (o Apolo não
+        fez nada — só percebeu que sumiu).
+        """
+        with self._tx() as conn:
+            conn.execute(
+                """
+                UPDATE emails
+                   SET status = ?, acao_aplicada = ?, processado_em = ?
+                 WHERE pasta = ? AND uidvalidity = ? AND uid = ?
+                """,
+                (STATUS_REMOVIDO, "removido_externo", _now(), pasta, uidvalidity, uid),
             )
 
     # ----- log de ações (sustenta o undo, passo 6) -----
