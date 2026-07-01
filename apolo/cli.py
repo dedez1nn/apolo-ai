@@ -275,6 +275,7 @@ def cmd_retry_ia(config: Config) -> int:
     verify_config = VerifyConfig.from_file(config.rules_path)
     with Storage(config.db_path) as store:
         n = _retry_stuck_ai(config, store, ollama, verify_config)
+    ollama.unload()
     print(f"{n} pendente(s) reclassificado(s).")
     return 0
 
@@ -423,6 +424,9 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                 print(f"IA reclassificou {retried} pendente(s) que ainda não tinham passado por ela.")
 
         fila_total = store.count_queue()
+
+    if ai_ready:
+        ollama.unload()
 
     print(f"\n{total_novos} email(s) novo(s).")
     if preservados:

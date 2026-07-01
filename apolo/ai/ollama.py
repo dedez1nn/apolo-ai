@@ -121,6 +121,13 @@ class OllamaClient:
         categoria = categoria or _ACAO_CATEGORIA.get(acao, "ia")
         return AIDecision(categoria=categoria, acao=acao)
 
+    def unload(self) -> None:
+        """Descarrega o modelo da RAM agora (keep_alive=0). Best-effort: falha é engolida."""
+        try:
+            self._post("/api/generate", {"model": self.model, "keep_alive": 0})
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+
     def _post(self, path: str, payload: dict) -> dict:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(

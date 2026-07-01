@@ -77,6 +77,9 @@ def run_sync(config: Config, *, limit: int, on_event: OnEvent) -> None:
                 except Exception as exc:
                     on_event("erro", conta=f"gmail:{account.name}", pasta=pasta, msg=str(exc))
 
+    if ai_ready:
+        ollama.unload()
+
     on_event("fim")
 
 
