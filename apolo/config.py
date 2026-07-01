@@ -143,11 +143,20 @@ class Config:
             Path(os.path.expanduser(tokens_dir_str)) if tokens_dir_str else _default_tokens_dir()
         )
 
+        # Senha: env real (override explícito) > keyring do SO (fonte gerida pela
+        # UI, troca toda sessão) > .env (legado). O keyring vence o .env de
+        # propósito — uma senha velha no .env não deve mascarar a nova do keyring.
+        from apolo import secrets
+
+        password = os.environ.get("APOLO_PASSWORD") or secrets.lookup_password() or env.get(
+            "APOLO_PASSWORD", ""
+        )
+
         return cls(
             imap_host=get("APOLO_IMAP_HOST", "127.0.0.1"),
             imap_port=int(get("APOLO_IMAP_PORT", "1143")),
             username=get("APOLO_USERNAME"),
-            password=get("APOLO_PASSWORD"),
+            password=password,
             imap_security=get("APOLO_IMAP_SECURITY", "STARTTLS").upper(),
             db_path=db_path,
             rules_path=rules_path,
@@ -165,6 +174,7 @@ class Config:
         """Falha cedo e claro se faltar usuário/senha do Bridge."""
         if not self.username or not self.password:
             raise RuntimeError(
-                "Credenciais do Bridge ausentes. Defina APOLO_USERNAME e "
-                "APOLO_PASSWORD no .env (veja .env.example)."
+                "Credenciais do Bridge ausentes. Defina o usuário no .env "
+                "(APOLO_USERNAME) e a senha pela tela de Configurações da UI "
+                "(guardada no keyring do SO)."
             )

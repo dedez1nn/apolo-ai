@@ -11,24 +11,52 @@ vale a partir da próxima passada (`apolo run`), não no processo já aberto.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Input, Label, Select, Static, Switch
+from textual.widgets import Button, Input, Label, Select, Static, Switch
 
-from apolo import scheduler
+from apolo import scheduler, secrets
 from apolo.config_writer import env_path, set_env_values
 from apolo.rules.writer import get_unsubscribe_acao, set_unsubscribe_acao
+from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, INK_DIM, INK_FAINT, keybar
 
 
 def _bool_env(v: bool) -> str:
     return "true" if v else "false"
 
 
+def _clipboard() -> str | None:
+    """Lê o clipboard do sistema. None se nenhuma ferramenta servir.
+
+    Colar dentro da TUI (kitty -e) depende do Ctrl+Shift+V do terminal e do
+    bracketed-paste — frágil em campo de senha. Ler o clipboard aqui (wl-paste
+    no Wayland, xclip/xsel no X11) contorna isso de vez.
+    """
+    for cmd in (
+        ["wl-paste", "-n"],
+        ["xclip", "-selection", "clipboard", "-o"],
+        ["xsel", "-b"],
+    ):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if p.returncode == 0:
+            return p.stdout
+    return None
+
+
 class SettingsScreen(Screen):
     BINDINGS = [
         Binding("ctrl+s", "salvar", "salvar", priority=True),
+        Binding("f2", "colar_senha", "colar senha", priority=True),
         Binding("escape,q", "app.pop_screen", "voltar"),
     ]
 
@@ -41,11 +69,28 @@ class SettingsScreen(Screen):
         self._inicial = {
             "timer": ativo, "interval": intervalo, "ai": cfg.ai_enabled,
             "model": cfg.ollama_model, "keep": cfg.ollama_keep_alive, "unsub": unsub,
+            "user": cfg.username,
         }
         intervalos = list(dict.fromkeys([*scheduler.INTERVALOS, intervalo]))
 
+        yield Static(
+            f"[b $accent]Configurações[/]  [{INK_DIM}]ajustes locais — nada é aplicado até salvar[/]",
+            classes="band",
+        )
         with VerticalScroll(id="cfg"):
-            yield Static("[b]  Configurações[/]", classes="cfg-title")
+            # A senha do Bridge troca a cada sessão dele; o dono cola a nova aqui
+            # em vez de editar nada na mão. Senha vai pro keyring do SO; usuário
+            # pro .env. Vale a partir da próxima passada.
+            yield Static("[b]Bridge · credenciais[/]  [dim]senha no keyring · usuário no .env[/]",
+                         classes="cfg-sec")
+            with Horizontal(classes="cfg-row"):
+                yield Label("Usuário", classes="cfg-lbl")
+                yield Input(value=cfg.username, id="f-user")
+            with Horizontal(classes="cfg-row"):
+                yield Label("Senha", classes="cfg-lbl")
+                yield Input(password=True, placeholder="•••• (vazio mantém a atual)",
+                            id="f-senha")
+                yield Button("Colar (F2)", id="paste-senha")
 
             yield Static("[b]Agendamento[/]  [dim]systemd timer[/]", classes="cfg-sec")
             with Horizontal(classes="cfg-row"):
@@ -80,8 +125,11 @@ class SettingsScreen(Screen):
                 yield Button("Salvar  (ctrl+s)", variant="primary", id="save")
                 yield Button("Voltar  (esc)", id="back")
 
-        yield Static("", id="cfg-msg")
-        yield Footer()
+        yield Static("", id="cfg-msg", classes="flash")
+        yield Static(
+            keybar([("^S", "Salvar", COR_MANTER), ("F2", "Colar senha"), ("Q", "Voltar")]),
+            classes="keybar",
+        )
 
     # ----- helpers -----
     def _cfg(self):
@@ -106,8 +154,23 @@ class SettingsScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save":
             self.action_salvar()
+        elif event.button.id == "paste-senha":
+            self.action_colar_senha()
         else:
             self.app.pop_screen()
+
+    def action_colar_senha(self) -> None:
+        """Preenche o campo de senha com o conteúdo do clipboard do sistema."""
+        texto = _clipboard()
+        if texto is None:
+            self._msg(f"[{COR_LIXEIRA}]clipboard indisponível (instale wl-clipboard/xclip)[/]")
+            return
+        texto = texto.strip()
+        if not texto:
+            self._msg(f"[{INK_FAINT}]clipboard vazio[/]")
+            return
+        self.query_one("#f-senha", Input).value = texto
+        self._msg(f"[{COR_MANTER}]✓ senha colada do clipboard (Ctrl+S para salvar)[/]")
 
     # ----- salvar -----
     def action_salvar(self) -> None:
@@ -120,6 +183,8 @@ class SettingsScreen(Screen):
             "model": self.query_one("#f-model", Input).value.strip(),
             "keep": self.query_one("#f-keep", Input).value.strip(),
             "unsub": self.query_one("#f-unsub", Select).value,
+            "user": self.query_one("#f-user", Input).value.strip(),
+            "senha": self.query_one("#f-senha", Input).value.strip(),
         }
         feitos: list[str] = []
         erros: list[str] = []
@@ -132,8 +197,19 @@ class SettingsScreen(Screen):
             except Exception as e:  # não derruba a tela
                 erros.append(f"timer: {e}")
 
-        # 2. IA -> .env (preserva o resto, inclusive credenciais).
+        # 2a. Senha do Bridge -> keyring do SO (libsecret). Vazia = manter a atual;
+        # só grava quando o dono digita uma nova.
+        if novo["senha"]:
+            if secrets.store_password(novo["senha"]):
+                feitos.append("senha → keyring")
+            else:
+                erros.append("senha: keyring indisponível (secret-tool?)")
+
+        # 2b. Usuário do Bridge + IA -> .env (preserva o resto). A senha NÃO vai
+        # pro .env — fica só no keyring.
         env_updates: dict[str, str] = {}
+        if novo["user"] and novo["user"] != ini["user"]:
+            env_updates["APOLO_USERNAME"] = novo["user"]
         if novo["ai"] != ini["ai"]:
             env_updates["APOLO_AI_ENABLED"] = _bool_env(novo["ai"])
         if novo["model"] and novo["model"] != ini["model"]:
@@ -155,13 +231,20 @@ class SettingsScreen(Screen):
             except Exception as e:
                 erros.append(f"unsubscribe: {e}")
 
+        # Recarrega o Config em memória — senão "rodar agora" e o resto da sessão
+        # da UI continuam com a senha/usuário antigos até fechar e reabrir.
+        if self.app.config is not None:
+            from apolo.config import Config
+
+            self.app.config = Config.load()
+
         # feedback + atualiza snapshot pro próximo diff
         self._inicial = novo
         if erros:
-            self._msg("[tomato]" + " · ".join(erros) + "[/]")
+            self._msg(f"[{COR_LIXEIRA}]" + " · ".join(erros) + "[/]")
             self.notify(" · ".join(erros), title="erro ao salvar", severity="error")
         elif feitos:
-            self._msg("[springgreen]✓ " + "  ·  ".join(feitos) + "[/]")
+            self._msg(f"[{COR_MANTER}]✓ " + "  ·  ".join(feitos) + "[/]")
             self.notify("Configurações salvas.", severity="information")
         else:
-            self._msg("[dim]nada mudou[/]")
+            self._msg(f"[{INK_FAINT}]nada mudou[/]")
