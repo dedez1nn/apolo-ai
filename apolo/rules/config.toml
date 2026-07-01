@@ -20,6 +20,8 @@ remetentes = [
   # "chefe@empresa.com",
 ]
 dominios = [
+  "portal-academico-exemplo.com",
+  "cofre-exemplo.com",
   #  #]
 
 [blocklist]
@@ -42,6 +44,25 @@ exige = ["oferta", "promoção", "promocao", "desconto", "off", "cupom",
 # Grupos de palavra-chave (substring, sem diferenciar maiúsculas/acento opcional).
 # campo: "assunto" | "remetente" | "ambos"
 # acao:  "lixeira" | "revisar" | "manter"
+
+[[keywords]]
+nome = "alerta_login"
+campo = "assunto"
+acao = "manter"
+padroes = [
+  # inglês
+  "logged in", "log in", "signed in", "sign-in", "sign in attempt",
+  "login attempt", "new device", "new sign-in", "suspicious login",
+  "security alert", "verify your identity", "password changed",
+  "password reset", "two-step", "two-factor", "2fa", "security code",
+  # português
+  "login realizado", "novo login", "tentativa de login", "tentativa de acesso",
+  "novo acesso", "acesso não reconhecido", "acesso nao reconhecido",
+  "dispositivo desconhecido", "alerta de segurança", "alerta de seguranca",
+  "senha alterada", "verificação de segurança", "verificacao de seguranca",
+  "código de verificação", "codigo de verificacao",
+  "código de segurança", "codigo de seguranca",
+]
 
 [[keywords]]
 nome = "promo"

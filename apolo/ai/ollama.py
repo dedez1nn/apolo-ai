@@ -24,6 +24,16 @@ _PROMPT = """Classifique o email abaixo escolhendo UMA ação:
 - manter: pessoal, trabalho, financeiro, segurança, alguém escrevendo de verdade
 - revisar: qualquer dúvida
 
+"Automático" ou "no-reply" NÃO é motivo sozinho pra lixeira: alerta de login/
+segurança, aviso de conta, comunicado de escola/faculdade e recibo são
+"manter" mesmo sendo automáticos. Só é lixeira se o CONTEÚDO for propaganda,
+promoção ou newsletter.
+
+Exemplos:
+De: no-reply@cofre-exemplo.com | Assunto: New Device Logged In -> manter (alerta de segurança)
+De: do-not-reply@portal-academico-exemplo.com | Assunto: aviso sobre nota da disciplina -> manter (comunicado acadêmico)
+De: promo@loja.com | Assunto: 50% OFF só hoje -> lixeira (promoção)
+
 Assunto: {assunto}
 De: {remetente}
 Trecho: {trecho}"""
