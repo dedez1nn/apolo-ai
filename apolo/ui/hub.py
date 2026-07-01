@@ -1,6 +1,8 @@
 """Hub — a tela inicial que abre no clique da Waybar.
 
-Menu navegável só com seta + Enter. Cada item leva a uma sub-tela.
+Layout mestre-detalhe: menu navegável (↑↓ + Enter) à esquerda; à direita, um
+painel de prévia ao vivo que muda conforme o cursor — mostra os primeiros emails
+da fila, as regras, os contadores etc. sem precisar entrar na sub-tela.
 """
 
 from __future__ import annotations
@@ -9,30 +11,47 @@ import contextlib
 import io
 from datetime import datetime
 
+def _mesc(s: str) -> str:
+    return s.replace("[", "\\[").replace("]", "\\]")
+
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Center, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Label, ListItem, ListView, Static
+from textual.widgets import Label, ListItem, ListView, Static
 
-from apolo.ui.model import Item, fmt_run
+from apolo.ui.model import ACAO_COR, ACAO_ICONE, Item, fmt_run
+from apolo.ui.theme import (
+    AZURE_BRT,
+    COR_LIXEIRA,
+    COR_MANTER,
+    COR_REVISAR,
+    DIAMOND,
+    GUTTER,
+    INK_DIM,
+    INK_FAINT,
+    keybar,
+)
 
-# (id, ícone, rótulo, pronto?) — ordem do menu.
+# (id, glyph, rótulo) — ordem do menu.
 _MENU = [
-    ("review", "", "Revisar fila", True),
-    ("add_rule", "", "Adicionar regra", True),
-    ("preview", "", "Prévia — o que as regras pegariam", True),
-    ("rules", "", "Regras configuradas", True),
-    ("run", "", "Rodar agora (uma passada)", True),
-    ("config", "", "Configurações", True),
-    ("status", "", "Status & contadores", True),
+    ("review",  "✉", "Revisar fila"),
+    ("add_rule", "+", "Adicionar regra"),
+    ("preview", "◎", "Prévia — o que as regras pegariam"),
+    ("rules",   "▤", "Regras configuradas"),
+    ("run",     "▶", "Rodar agora (uma passada)"),
+    ("sync",    "⇄", "Sincronizar (buscar tudo)"),
+    ("retry_ia", "↻", "Reclassificar pendentes (IA)"),
+    ("gmail",   "G", "Configurar Gmail"),
+    ("config",  "⚙", "Configurações"),
+    ("status",  "▦", "Status & contadores"),
 ]
 
 
 class MenuItem(ListItem):
-    def __init__(self, key: str, icone: str, rotulo: str, badge: str, pronto: bool):
-        super().__init__(classes="menu-item" if pronto else "menu-item soon")
+    def __init__(self, key: str, icone: str, rotulo: str, badge: str):
+        super().__init__(classes="menu-item")
         self.key_id = key
         self._icone = icone
         self._rotulo = rotulo
@@ -53,50 +72,240 @@ class HubScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="hub"):
-            with Center():
-                yield Static(self._titulo(), id="hub-title")
-            with Center():
-                yield Static(self._subtitulo(), id="hub-stats")
-            yield ListView(*self._itens(), id="hub-menu")
-        yield Footer()
+        with Vertical(id="hub-root"):
+            with Horizontal(id="masthead"):
+                yield Static(self._brand(), id="mast-brand")
+                yield Static(self._stats(), id="mast-stats")
+            with Horizontal(id="hub-body"):
+                yield ListView(*self._itens(), id="hub-menu")
+                with VerticalScroll(id="hub-detail"):
+                    yield Static(id="hub-detail-body", markup=True)
+        yield Static(
+            keybar([("↑↓", "Navegar"), ("↵", "Abrir"), ("Q", "Sair")]),
+            classes="keybar",
+        )
 
     # ----- montagem -----
     def on_mount(self) -> None:
         self.query_one("#hub-menu", ListView).focus()
+        self._render_detalhe("review")
         self.set_interval(1.0, self._tick_relogio)
 
     def _itens(self) -> list[MenuItem]:
         n_fila = len(self.app.queue)
         n_regras = self.app.stats.rules_count
         badges = {"review": str(n_fila) if n_fila else "", "rules": str(n_regras) if n_regras else ""}
-        return [
-            MenuItem(key, icone, rotulo, badges.get(key, ""), pronto)
-            for key, icone, rotulo, pronto in _MENU
-        ]
+        return [MenuItem(key, icone, rotulo, badges.get(key, "")) for key, icone, rotulo in _MENU]
 
-    # ----- textos do topo -----
-    def _titulo(self) -> str:
-        return f"  apolo     ·  triador de emails     {datetime.now().strftime('%H:%M')}"
+    # ----- masthead -----
+    def _brand(self) -> str:
+        return f"{DIAMOND} APOLO   [{INK_FAINT}]{'·'}[/]   [{INK_DIM}]triador de emails[/]"
 
-    def _subtitulo(self) -> str:
+    def _stats(self) -> str:
+        # Todo texto vai dentro de um span: o render do Textual descarta um espaço
+        # que apareça logo após um [/] seguido de texto puro — com spans, os
+        # espaços ficam antes das tags de abertura e são preservados.
         n = len(self.app.queue)
-        fila = f"{n} na fila" if n else "fila vazia"
-        return f"{fila}   ·   última passada {fmt_run(self.app.stats.last_run)}"
+        fila = (
+            f"[{AZURE_BRT} b]{n}[/] [{INK_DIM}]na fila[/]" if n else f"[{INK_FAINT}]fila vazia[/]"
+        )
+        ultima = fmt_run(self.app.stats.last_run)
+        agora = datetime.now().strftime("%H:%M")
+        sep = f"   [{INK_FAINT}]·[/]   "
+        return sep.join([fila, f"[{INK_DIM}]última {ultima}[/]", f"[{AZURE_BRT}]{agora}[/]"])
 
     def _tick_relogio(self) -> None:
-        self.query_one("#hub-title", Static).update(self._titulo())
+        self.query_one("#mast-stats", Static).update(self._stats())
+
+    # ----- detalhe (painel direito) -----
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if isinstance(event.item, MenuItem):
+            self._render_detalhe(event.item.key_id)
+
+    def _render_detalhe(self, key: str) -> None:
+        try:
+            body = self.query_one("#hub-detail-body", Static)
+        except Exception:
+            return
+        body.update(getattr(self, f"_det_{key}", self._det_vazio)())
+
+    def _titulo_det(self, texto: str) -> str:
+        return f"[{AZURE_BRT} b]{texto}[/]\n[{INK_FAINT}]{'─' * 40}[/]\n"
+
+    def _linhas_emails(self, itens: list, limite: int = 14) -> list[str]:
+        linhas = []
+        for it in itens[:limite]:
+            cor = ACAO_COR.get(it.acao, AZURE_BRT)
+            rem = _mesc((it.remetente or "(sem remetente)")[:40])
+            assunto = _mesc((it.assunto or "")[:46])
+            linhas.append(f"[{cor}]{GUTTER}[/] {rem}")
+            if assunto:
+                linhas.append(f"  [{INK_FAINT}]{assunto}[/]")
+        if len(itens) > limite:
+            linhas.append(f"\n[{INK_FAINT}]… e mais {len(itens) - limite}[/]")
+        return linhas
+
+    def _det_review(self) -> str:
+        fila = self.app.queue
+        if not fila:
+            return self._titulo_det("Revisar fila") + f"\n[{INK_DIM}]Fila vazia — nada para revisar agora.[/]"
+        cab = self._titulo_det("Revisar fila")
+        rodape = f"\n[{INK_DIM}]{len(fila)} email(s) aguardando · Enter para revisar[/]"
+        return cab + "\n".join(self._linhas_emails(fila)) + rodape
+
+    def _det_add_rule(self) -> str:
+        n = self.app.stats.rules_count
+        return (
+            self._titulo_det("Adicionar regra")
+            + f"\n[{INK_DIM}]Cria uma entrada na allowlist (manter) ou blocklist\n"
+            f"(lixeira) a partir de um domínio ou remetente.\n\n"
+            f"A prévia ao vivo mostra o que casaria na fila antes\n"
+            f"de salvar.[/]\n\n[{AZURE_BRT} b]{n}[/] [{INK_DIM}]regra(s) configurada(s)[/]"
+        )
+
+    def _det_preview(self) -> str:
+        from collections import Counter
+
+        from apolo.rules.engine import RuleEngine
+
+        cab = self._titulo_det("Prévia da cascata")
+        if not self.app.queue:
+            return cab + f"\n[{INK_DIM}]Fila vazia — nada para simular.[/]"
+        try:
+            engine = RuleEngine.from_file(self.app.rules_path)
+            cont: Counter = Counter()
+            for it in self.app.queue:
+                dec = engine.classify(remetente=it.remetente, assunto=it.assunto, list_unsubscribe="")
+                cont[dec.acao_sugerida] += 1
+        except Exception as exc:
+            return cab + f"\n[{COR_LIXEIRA}]Erro ao simular: {exc}[/]"
+        linhas = [
+            f"\n[{COR_LIXEIRA}]{GUTTER}[/] lixeira   [b]{cont.get('lixeira', 0)}[/]",
+            f"[{COR_MANTER}]{GUTTER}[/] manter    [b]{cont.get('manter', 0)}[/]",
+            f"[{COR_REVISAR}]{GUTTER}[/] revisar   [b]{cont.get('revisar', 0)}[/]",
+            f"\n[{INK_DIM}]Simulação offline · Enter para o detalhe por regra[/]",
+        ]
+        return cab + "\n".join(linhas)
+
+    def _det_rules(self) -> str:
+        from apolo.rules.writer import list_entries
+
+        cab = self._titulo_det("Regras configuradas")
+        try:
+            entries = list_entries(self.app.rules_path)
+        except Exception as exc:
+            return cab + f"\n[{COR_LIXEIRA}]Erro ao ler regras: {exc}[/]"
+        if not entries:
+            return cab + f"\n[{INK_DIM}]Nenhuma regra ainda — Enter para criar a primeira.[/]"
+        linhas = []
+        for lista, tipo, valor in entries[:16]:
+            cor = COR_MANTER if lista == "allowlist" else COR_LIXEIRA
+            linhas.append(f"[{cor}]{GUTTER}[/] [{INK_FAINT}]{tipo:<9}[/] {valor[:42]}")
+        if len(entries) > 16:
+            linhas.append(f"\n[{INK_FAINT}]… e mais {len(entries) - 16}[/]")
+        return cab + "\n".join(linhas)
+
+    def _det_run(self) -> str:
+        return (
+            self._titulo_det("Rodar agora")
+            + f"\n[{INK_DIM}]Busca e classifica os emails uma vez, na hora,\n"
+            f"sem abrir nenhuma outra tela.[/]\n\n"
+            f"[{INK_DIM}]Última passada:[/] [b]{fmt_run(self.app.stats.last_run)}[/]"
+        )
+
+    def _det_sync(self) -> str:
+        limite = self.app.config.sync_limit if self.app.config else 500
+        limite_txt = "sem limite" if not limite else f"{limite} mais recentes"
+        return (
+            self._titulo_det("Sincronizar")
+            + f"\n[{INK_DIM}]Busca TODOS os emails de TODAS as contas vinculadas\n"
+            f"({limite_txt} por pasta), não só o delta desde a última\n"
+            f"passada — cobre o que ficou de fora (ex.: o cap de 50 do\n"
+            f"primeiro sync do Gmail).\n\n"
+            f"Cada email aparece na lista assim que a cascata decide;\n"
+            f"o que ela não resolver passa por 'analisando' até o\n"
+            f"Ollama responder — tudo ao vivo.[/]"
+        )
+
+    def _det_retry_ia(self) -> str:
+        return (
+            self._titulo_det("Reclassificar pendentes (IA)")
+            + f"\n[{INK_DIM}]Reenvia pro Ollama os pendentes que a cascata\n"
+            f"deixou em 'default' mas que nunca chegaram a passar\n"
+            f"pela IA — normalmente porque o Ollama estava fora do\n"
+            f"ar na hora em que o email chegou.\n\n"
+            f"Não busca emails novos, só tenta de novo os presos.[/]"
+        )
+
+    def _det_gmail(self) -> str:
+        cab = self._titulo_det("Configurar Gmail")
+        cfg = self.app.config
+        tem_creds = cfg and cfg.gmail_client_id and cfg.gmail_client_secret
+        if not tem_creds:
+            return cab + (
+                f"\n[{INK_DIM}]Defina no .env:[/]\n"
+                f"  APOLO_GMAIL_CLIENT_ID=…\n"
+                f"  APOLO_GMAIL_CLIENT_SECRET=…\n\n"
+                f"[{INK_DIM}]Depois abra este item para autorizar via browser.[/]"
+            )
+        from apolo.config import load_accounts
+        contas = [a for a in load_accounts(cfg.accounts_path) if a.provider == "gmail"]
+        linhas = [f"[{INK_DIM}]Credenciais OAuth2 configuradas no .env.[/]\n"]
+        if contas:
+            linhas.append(f"[{INK_DIM}]Contas autorizadas:[/]")
+            for c in contas:
+                tok = cfg.tokens_dir / f"{c.name}.json"
+                estado = f"[{COR_MANTER}]✓ token presente[/]" if tok.exists() else f"[{COR_LIXEIRA}]sem token[/]"
+                linhas.append(f"  {GUTTER} {c.name}  {estado}")
+        else:
+            linhas.append(f"[{INK_DIM}]Nenhuma conta adicionada ainda.[/]")
+        linhas.append(f"\n[{INK_DIM}]Enter para autorizar uma nova conta.[/]")
+        return cab + "\n".join(linhas)
+
+    def _det_config(self) -> str:
+        cab = self._titulo_det("Configurações")
+        cfg = self.app.config
+        if cfg is None:
+            return cab + f"\n[{INK_DIM}]Ajustes de agendamento, IA, newsletters e credenciais.[/]"
+        ia = f"[{COR_MANTER}]ligada[/]" if cfg.ai_enabled else f"[{INK_FAINT}]desligada[/]"
+        return cab + (
+            f"\n[{INK_DIM}]IA / classificação:[/] {ia}\n"
+            f"[{INK_DIM}]Modelo:[/] {cfg.ollama_model}\n"
+            f"[{INK_DIM}]Pastas:[/] {', '.join(cfg.folders)}\n\n"
+            f"[{INK_DIM}]Enter para agendamento, IA, newsletters e senha do Bridge.[/]"
+        )
+
+    def _det_status(self) -> str:
+        st = self.app.stats
+        cab = self._titulo_det("Status & contadores")
+        linhas = [
+            f"\n[{INK_DIM}]Última passada:[/] [b]{fmt_run(st.last_run)}[/]",
+            f"[{INK_DIM}]Na fila:[/] [b]{len(self.app.queue)}[/]",
+            f"[{INK_DIM}]Regras:[/] [b]{st.rules_count}[/]",
+        ]
+        if st.acao_counts:
+            linhas.append(f"\n[{INK_FAINT}]ação sugerida[/]")
+            for acao, n in sorted(st.acao_counts.items()):
+                cor = ACAO_COR.get(acao, AZURE_BRT)
+                linhas.append(f"[{cor}]{GUTTER}[/] {acao:<10} [b]{n}[/]")
+        return cab + "\n".join(linhas)
+
+    def _det_vazio(self) -> str:
+        return ""
 
     # ----- ações -----
     def _atualizar(self) -> None:
-        """Refaz topo + badges (a fila pode ter encolhido após revisar)."""
-        self.query_one("#hub-stats", Static).update(self._subtitulo())
+        """Refaz masthead + badges + detalhe (a fila pode ter encolhido)."""
+        self.query_one("#mast-stats", Static).update(self._stats())
         menu = self.query_one("#hub-menu", ListView)
         idx = menu.index
         menu.clear()
         menu.extend(self._itens())
         if idx is not None:
             menu.index = idx
+        item = menu.highlighted_child
+        if isinstance(item, MenuItem):
+            self._render_detalhe(item.key_id)
 
     def action_abrir(self) -> None:
         menu = self.query_one("#hub-menu", ListView)
@@ -121,6 +330,7 @@ class HubScreen(Screen):
         if key == "review":
             if not self.app.queue:
                 self.notify("Fila vazia — nada pra revisar.", severity="information")
+                self._atualizar()
                 return
             from apolo.ui.queue import QueueScreen
 
@@ -156,10 +366,33 @@ class HubScreen(Screen):
                 self._atualizar()
 
             self.app.push_screen(RunModal(), _cb_run)
+        elif key == "sync":
+            if not self.app.config:
+                self.notify("Configuração não carregada.", severity="error")
+                return
+            from apolo.ui.sync_screen import SyncScreen
+
+            self.app.push_screen(SyncScreen(), lambda _=None: self._atualizar())
+        elif key == "retry_ia":
+            if not self.app.config:
+                self.notify("Configuração não carregada.", severity="error")
+                return
+
+            def _cb_retry(resultado: str | None) -> None:
+                if resultado:
+                    sev = "error" if resultado.startswith("erro:") else "information"
+                    self.notify(resultado[:120], title="apolo retry-ia", severity=sev)
+                self._atualizar()
+
+            self.app.push_screen(RetryIaModal(), _cb_retry)
         elif key == "config":
             from apolo.ui.settings import SettingsScreen
 
             self.app.push_screen(SettingsScreen())
+        elif key == "gmail":
+            from apolo.ui.gmail_setup import GmailSetupModal
+
+            self.app.push_screen(GmailSetupModal(), lambda _=None: None)
         elif key == "status":
             from apolo.ui.status import StatusScreen
 
@@ -171,9 +404,9 @@ class RunModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="run-box"):
-            yield Static("[b]  Rodar agora[/]", classes="cfg-title")
-            yield Static("  Buscando emails e classificando…", id="run-msg")
-            yield Static("  [dim](pode levar alguns segundos)[/]")
+            yield Static("[b]Rodar agora[/]", classes="cfg-title")
+            yield Static("Buscando emails e classificando…", id="run-msg")
+            yield Static(f"[{INK_FAINT}](pode levar alguns segundos)[/]")
 
     def on_mount(self) -> None:
         self._executar()
@@ -203,6 +436,47 @@ class RunModal(ModalScreen):
                 rows = store.fetch_queue()
                 self.app.queue = [Item(r) for r in rows]
                 self.app.stats.last_run = store.last_processed_at()
+        except Exception:
+            pass
+        self.dismiss(resultado)
+
+
+class RetryIaModal(ModalScreen):
+    """Executa `apolo retry-ia` numa thread e fecha ao terminar."""
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="run-box"):
+            yield Static("[b]Reclassificar pendentes (IA)[/]", classes="cfg-title")
+            yield Static("Reenviando pro Ollama os presos sem IA…", id="run-msg")
+            yield Static(f"[{INK_FAINT}](pode levar alguns segundos)[/]")
+
+    def on_mount(self) -> None:
+        self._executar()
+
+    @work(thread=True)
+    def _executar(self) -> None:
+        from apolo.cli import cmd_retry_ia
+
+        buf = io.StringIO()
+        resultado = "concluído."
+        try:
+            with contextlib.redirect_stdout(buf):
+                cmd_retry_ia(self.app.config)
+            saida = buf.getvalue().strip()
+            if saida:
+                resultado = saida
+        except Exception as exc:
+            resultado = f"erro: {exc}"
+
+        self.app.call_from_thread(self._apos_retry, resultado)
+
+    def _apos_retry(self, resultado: str) -> None:
+        from apolo.storage.db import Storage
+
+        try:
+            with Storage(self.app.config.db_path) as store:
+                rows = store.fetch_queue()
+                self.app.queue = [Item(r) for r in rows]
         except Exception:
             pass
         self.dismiss(resultado)
