@@ -294,6 +294,28 @@ class HubScreen(Screen):
         return ""
 
     # ----- ações -----
+    def _recarregar_fila(self) -> None:
+        """Relê a fila do banco — pega o que o timer do systemd (`apolo run`
+        em paralelo) inseriu enquanto o dono estava fora da listagem, mesmo que
+        ainda não tenha passado pela IA. Seguro: decisões da listagem só saem
+        do banco quando aplicadas (Enter), e nesse caso já não aparecem mais
+        aqui; as descartadas (Esc/Q) voltam pro `app.queue` sem nunca ter
+        tocado o banco.
+        """
+        if not self.app.config:
+            return
+        from apolo.storage.db import Storage
+
+        try:
+            with Storage(self.app.config.db_path) as store:
+                self.app.queue = [Item(r) for r in store.fetch_queue()]
+        except Exception:
+            pass
+
+    def _apos_listagem(self, _=None) -> None:
+        self._recarregar_fila()
+        self._atualizar()
+
     def _atualizar(self) -> None:
         """Refaz masthead + badges + detalhe (a fila pode ter encolhido)."""
         self.query_one("#mast-stats", Static).update(self._stats())
@@ -328,13 +350,14 @@ class HubScreen(Screen):
 
     def _rotear(self, key: str) -> None:
         if key == "review":
+            self._recarregar_fila()
             if not self.app.queue:
                 self.notify("Fila vazia — nada pra revisar.", severity="information")
                 self._atualizar()
                 return
             from apolo.ui.queue import QueueScreen
 
-            self.app.push_screen(QueueScreen(), lambda _=None: self._atualizar())
+            self.app.push_screen(QueueScreen(), self._apos_listagem)
         elif key == "add_rule":
             from apolo.ui.rules_screen import AddRuleModal
 
