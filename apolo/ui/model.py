@@ -5,11 +5,13 @@ from __future__ import annotations
 from email.utils import parsedate_to_datetime
 
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR
+from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, COR_REVISAR
 
-# Ícone + rótulo + classe de cor (TCSS) por ação.
-ACAO_ICONE = {ACAO_LIXEIRA: "", ACAO_MANTER: "", ACAO_REVISAR: ""}
+# Glyph + rótulo + cor (hex do tema) por ação. Glyphs Unicode comuns — sem
+# dependência de nerd font: ● lixeira, ✓ manter, ◆ revisar.
+ACAO_ICONE = {ACAO_LIXEIRA: "●", ACAO_MANTER: "✓", ACAO_REVISAR: "◆"}
 ACAO_ROTULO = {ACAO_LIXEIRA: "lixeira", ACAO_MANTER: "manter", ACAO_REVISAR: "revisar"}
-ACAO_COR = {ACAO_LIXEIRA: "tomato", ACAO_MANTER: "springgreen", ACAO_REVISAR: "gold"}
+ACAO_COR = {ACAO_LIXEIRA: COR_LIXEIRA, ACAO_MANTER: COR_MANTER, ACAO_REVISAR: COR_REVISAR}
 
 
 def fmt_data(raw: str) -> str:

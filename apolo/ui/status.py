@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Footer, Static
+from textual.widgets import Static
 
-from apolo.ui.model import fmt_run
+from apolo.ui.model import ACAO_COR, fmt_run
+from apolo.ui.theme import AZURE_BRT, GUTTER, INK_DIM, INK_FAINT, keybar
 
 
 class StatusScreen(Screen):
@@ -16,17 +17,22 @@ class StatusScreen(Screen):
 
     def compose(self) -> ComposeResult:
         st = self.app.stats
-        linhas = [f"[b]  Status[/]\n", f"  última passada   [b]{fmt_run(st.last_run)}[/]",
-                  f"  na fila          [b]{len(self.app.queue)}[/]",
-                  f"  regras           [b]{st.rules_count}[/]\n"]
+        linhas = [
+            f"[{INK_DIM}]última passada[/]   [b]{fmt_run(st.last_run)}[/]",
+            f"[{INK_DIM}]na fila[/]          [b]{len(self.app.queue)}[/]",
+            f"[{INK_DIM}]regras[/]           [b]{st.rules_count}[/]",
+        ]
         if st.status_counts:
-            linhas.append("  [dim]por status[/]")
+            linhas.append(f"\n[{INK_FAINT}]por status[/]")
             for status, n in sorted(st.status_counts.items()):
-                linhas.append(f"    {status:<14} {n}")
+                linhas.append(f"  {status:<14} [b]{n}[/]")
         if st.acao_counts:
-            linhas.append("\n  [dim]ação sugerida[/]")
+            linhas.append(f"\n[{INK_FAINT}]ação sugerida[/]")
             for acao, n in sorted(st.acao_counts.items()):
-                linhas.append(f"    {acao:<14} {n}")
-        with Vertical(id="status-box"):
-            yield Static("\n".join(linhas))
-        yield Footer()
+                cor = ACAO_COR.get(acao, AZURE_BRT)
+                linhas.append(f"  [{cor}]{GUTTER}[/] {acao:<12} [b]{n}[/]")
+
+        yield Static("[b $accent]Status & contadores[/]", id="status-header", classes="band")
+        with VerticalScroll(id="status-scroll"):
+            yield Static("\n".join(linhas), id="status-body", markup=True)
+        yield Static(keybar([("Q", "Voltar")]), classes="keybar")

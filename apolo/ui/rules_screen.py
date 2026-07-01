@@ -13,7 +13,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, Footer, Input, Label, ListItem, ListView, Select, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, Select, Static
 
 from apolo.rules.engine import _casa_dominio, parse_sender
 from apolo.rules.writer import (
@@ -23,10 +23,12 @@ from apolo.rules.writer import (
     normalize_valor,
     remove_rule_entry,
 )
+from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, INK_DIM, INK_FAINT, keybar
 
-# cor + ícone por lista
-_LISTA_COR = {"allowlist": "springgreen", "blocklist": "tomato"}
-_LISTA_ICONE = {"allowlist": "", "blocklist": ""}
+# cor + ícone + classe de gutter por lista
+_LISTA_COR = {"allowlist": COR_MANTER, "blocklist": COR_LIXEIRA}
+_LISTA_ICONE = {"allowlist": "✓", "blocklist": "●"}
+_LISTA_CLS = {"allowlist": "v-allow", "blocklist": "v-block"}
 _LISTA_ACAO = {"allowlist": "manter", "blocklist": "lixeira"}
 
 
@@ -45,14 +47,14 @@ def _casa_fila(queue, tipo: str, valor: str) -> list:
 
 class RuleRow(ListItem):
     def __init__(self, lista: str, tipo: str, valor: str):
-        super().__init__(classes="rule-row")
+        super().__init__(classes=f"rule-row {_LISTA_CLS.get(lista, '')}")
         self.lista, self.tipo, self.valor = lista, tipo, valor
 
     def compose(self) -> ComposeResult:
         cor = _LISTA_COR.get(self.lista, "white")
-        icone = _LISTA_ICONE.get(self.lista, "")
+        icone = _LISTA_ICONE.get(self.lista, "·")
         yield Label(
-            f"[b {cor}]{icone} {self.lista:<9}[/]  [dim]{self.tipo:<10}[/]  {self.valor}",
+            f"[b {cor}]{icone} {self.lista:<9}[/]  [{INK_FAINT}]{self.tipo:<10}[/]  {self.valor}",
             markup=True,
         )
 
@@ -68,11 +70,20 @@ class RulesScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="rules"):
-            yield Static(id="rules-header")
-            yield ListView(id="rules-list")
-        yield Static("", id="rules-msg")
-        yield Footer()
+        yield Static(id="rules-header", classes="band")
+        yield ListView(id="rules-list")
+        yield Static("", id="rules-msg", classes="flash")
+        yield Static(
+            keybar(
+                [
+                    ("A", "Adicionar", COR_MANTER),
+                    ("E", "Editar"),
+                    ("X", "Remover", COR_LIXEIRA),
+                    ("Q", "Voltar"),
+                ]
+            ),
+            classes="keybar",
+        )
 
     async def on_mount(self) -> None:
         await self._recarregar()
@@ -87,10 +98,9 @@ class RulesScreen(Screen):
         n_allow = sum(1 for e in entries if e[0] == "allowlist")
         n_block = sum(1 for e in entries if e[0] == "blocklist")
         self.query_one("#rules-header", Static).update(
-            "[b]  Regras[/]\n"
-            f"  [springgreen] {n_allow} allowlist[/]   [tomato] {n_block} blocklist[/]"
-            "    [dim]a adicionar · e editar · x remover[/]"
-            + ("" if entries else "\n\n  [dim](nenhuma regra ainda — aperte 'a' pra criar)[/]")
+            "[b $accent]Regras[/]\n"
+            f"[{COR_MANTER}]✓ {n_allow} allowlist[/]   [{COR_LIXEIRA}]● {n_block} blocklist[/]"
+            + ("" if entries else f"\n\n[{INK_DIM}]Nenhuma regra ainda — aperte A para criar a primeira.[/]")
         )
 
     async def _recarregar(self) -> None:
@@ -120,14 +130,14 @@ class RulesScreen(Screen):
         lst = self.query_one("#rules-list", ListView)
         row = lst.highlighted_child
         if not isinstance(row, RuleRow):
-            self._msg("[dim]nada selecionado[/]")
+            self._msg(f"[{INK_FAINT}]nada selecionado[/]")
             return
         try:
             status = remove_rule_entry(
                 self.app.rules_path, lista=row.lista, tipo=row.tipo, valor=row.valor
             )
         except Exception as e:  # não derruba a tela
-            self._msg(f"[tomato]erro ao remover: {e}[/]")
+            self._msg(f"[{COR_LIXEIRA}]erro ao remover: {e}[/]")
             return
 
         # Salva índice antes de remover; após await o DOM estará atualizado.
@@ -142,7 +152,7 @@ class RulesScreen(Screen):
             lst.focus()
 
         verbo = "removida" if status == "removed" else "não estava lá"
-        self._msg(f"[tomato]✗ {row.lista}: {row.valor} {verbo}[/]")
+        self._msg(f"[{COR_LIXEIRA}]✗ {row.lista}: {row.valor} {verbo}[/]")
 
     def action_adicionar(self) -> None:
         self.app.push_screen(AddRuleModal(), self._apos_add)
@@ -157,7 +167,7 @@ class RulesScreen(Screen):
     def action_editar(self) -> None:
         row = self.query_one("#rules-list", ListView).highlighted_child
         if not isinstance(row, RuleRow):
-            self._msg("[dim]nada selecionado[/]")
+            self._msg(f"[{INK_FAINT}]nada selecionado[/]")
             return
         self.app.push_screen(EditRuleModal(row.lista, row.tipo, row.valor), self._apos_editar)
 
@@ -179,7 +189,7 @@ class AddRuleModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="add-box"):
-            yield Static("[b]  Nova regra[/]", classes="cfg-title")
+            yield Static("[b]Nova regra[/]", classes="cfg-title")
             with Horizontal(classes="cfg-row"):
                 yield Label("Lista", classes="cfg-lbl")
                 yield Select(
@@ -214,34 +224,34 @@ class AddRuleModal(ModalScreen):
     def _prever(self) -> None:
         valor = self.query_one("#r-valor", Input).value.strip()
         tipo = detect_tipo(valor) if valor else "—"
-        self.query_one("#r-tipo", Static).update(f"  [dim]tipo detectado:[/] [b]{tipo}[/]")
+        self.query_one("#r-tipo", Static).update(f"[{INK_DIM}]tipo detectado:[/] [b $accent]{tipo}[/]")
         prev = self.query_one("#r-preview", Static)
         if not valor:
-            prev.update("  [dim]digite um valor pra ver o que casaria na fila…[/]")
+            prev.update(f"[{INK_FAINT}]digite um valor para ver o que casaria na fila…[/]")
             return
         casados = _casa_fila(self.app.queue, tipo, valor)
         if not casados:
-            prev.update("  [dim]prévia: 0 na fila casariam[/]")
+            prev.update(f"[{INK_FAINT}]prévia: 0 na fila casariam[/]")
             return
-        linhas = [f"  [b]prévia · casaria {len(casados)} na fila[/]"]
+        linhas = [f"[b $accent]prévia · casaria {len(casados)} na fila[/]"]
         for it in casados[:8]:
             assunto = (it.assunto or "")[:48]
-            linhas.append(f"   • {it.remetente[:34]:<34} [dim]{assunto}[/]")
+            linhas.append(f"  [{COR_MANTER}]›[/] {it.remetente[:34]:<34} [{INK_FAINT}]{assunto}[/]")
         if len(casados) > 8:
-            linhas.append(f"   [dim]… e mais {len(casados) - 8}[/]")
+            linhas.append(f"  [{INK_FAINT}]… e mais {len(casados) - 8}[/]")
         prev.update("\n".join(linhas))
 
     def action_salvar(self) -> None:
         valor = self.query_one("#r-valor", Input).value.strip()
         if not valor:
-            self.query_one("#r-preview", Static).update("  [tomato]valor vazio — nada criado[/]")
+            self.query_one("#r-preview", Static).update(f"[{COR_LIXEIRA}]valor vazio — nada criado[/]")
             return
         lista = self.query_one("#r-lista", Select).value
         tipo = detect_tipo(valor)
         try:
             status = add_rule_entry(self.app.rules_path, lista=lista, tipo=tipo, valor=valor)
         except Exception as e:
-            self.query_one("#r-preview", Static).update(f"  [tomato]erro: {e}[/]")
+            self.query_one("#r-preview", Static).update(f"[{COR_LIXEIRA}]erro: {e}[/]")
             return
         self.dismiss((lista, tipo, valor.lower().lstrip("@"), status))
 
@@ -265,7 +275,7 @@ class EditRuleModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="add-box"):
-            yield Static("[b]  Editar regra[/]", classes="cfg-title")
+            yield Static("[b]Editar regra[/]", classes="cfg-title")
             with Horizontal(classes="cfg-row"):
                 yield Label("Lista", classes="cfg-lbl")
                 yield Select(
@@ -302,27 +312,27 @@ class EditRuleModal(ModalScreen):
     def _prever(self) -> None:
         valor = self.query_one("#r-valor", Input).value.strip()
         tipo = detect_tipo(valor) if valor else "—"
-        self.query_one("#r-tipo", Static).update(f"  [dim]tipo detectado:[/] [b]{tipo}[/]")
+        self.query_one("#r-tipo", Static).update(f"[{INK_DIM}]tipo detectado:[/] [b $accent]{tipo}[/]")
         prev = self.query_one("#r-preview", Static)
         if not valor:
-            prev.update("  [dim]digite um valor pra ver o que casaria na fila…[/]")
+            prev.update(f"[{INK_FAINT}]digite um valor para ver o que casaria na fila…[/]")
             return
         casados = _casa_fila(self.app.queue, tipo, valor)
         if not casados:
-            prev.update("  [dim]prévia: 0 na fila casariam[/]")
+            prev.update(f"[{INK_FAINT}]prévia: 0 na fila casariam[/]")
             return
-        linhas = [f"  [b]prévia · casaria {len(casados)} na fila[/]"]
+        linhas = [f"[b $accent]prévia · casaria {len(casados)} na fila[/]"]
         for it in casados[:8]:
             assunto = (it.assunto or "")[:48]
-            linhas.append(f"   • {it.remetente[:34]:<34} [dim]{assunto}[/]")
+            linhas.append(f"  [{COR_MANTER}]›[/] {it.remetente[:34]:<34} [{INK_FAINT}]{assunto}[/]")
         if len(casados) > 8:
-            linhas.append(f"   [dim]… e mais {len(casados) - 8}[/]")
+            linhas.append(f"  [{INK_FAINT}]… e mais {len(casados) - 8}[/]")
         prev.update("\n".join(linhas))
 
     def action_salvar(self) -> None:
         novo_valor = self.query_one("#r-valor", Input).value.strip()
         if not novo_valor:
-            self.query_one("#r-preview", Static).update("  [tomato]valor vazio — nada alterado[/]")
+            self.query_one("#r-preview", Static).update(f"[{COR_LIXEIRA}]valor vazio — nada alterado[/]")
             return
         nova_lista = self.query_one("#r-lista", Select).value
         novo_tipo = detect_tipo(novo_valor)
@@ -341,7 +351,7 @@ class EditRuleModal(ModalScreen):
                 lista=self._orig_lista, tipo=self._orig_tipo, valor=self._orig_valor,
             )
         except Exception as e:
-            prev.update(f"  [tomato]erro ao remover original: {e}[/]")
+            prev.update(f"[{COR_LIXEIRA}]erro ao remover original: {e}[/]")
             return
         try:
             status = add_rule_entry(
@@ -356,7 +366,7 @@ class EditRuleModal(ModalScreen):
                 )
             except Exception:
                 pass
-            prev.update(f"  [tomato]erro ao salvar: {e}[/]")
+            prev.update(f"[{COR_LIXEIRA}]erro ao salvar: {e}[/]")
             return
 
         self.dismiss((nova_lista, novo_tipo, novo_norm, status))
