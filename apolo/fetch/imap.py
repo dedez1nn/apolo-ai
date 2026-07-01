@@ -182,6 +182,59 @@ class BridgeClient:
             ultimo_uid=max_uid,
         )
 
+    def list_uids(self, pasta: str, limit: int) -> tuple[list[int], int]:
+        """Lista até `limit` UIDs mais recentes da pasta (uma única busca IMAP)
+        + a UIDVALIDITY atual, ignorando o ponteiro incremental (last_uid) —
+        descobre o que um sync anterior limitado deixou de fora.
+
+        Não busca headers aqui: o chamador filtra contra o banco e usa
+        `fetch_header` só pros UIDs genuinamente novos (ver apolo.sync), assim
+        o progresso aparece ao vivo em vez de um lote silencioso.
+        """
+        assert self._imap is not None
+        uidvalidity = self._select_readonly(pasta)
+
+        typ, data = self._imap.uid("search", None, "ALL")
+        if typ != "OK":
+            raise RuntimeError(f"falha no UID SEARCH (sync completo) em {pasta!r}")
+
+        raw_ids = data[0].split() if data and data[0] else []
+        all_uids = sorted(int(x) for x in raw_ids)
+        uids = all_uids[-limit:] if limit > 0 else all_uids
+        return uids, uidvalidity
+
+    def fetch_header(self, uid: int) -> FetchedEmail | None:
+        """Busca o header de um único UID (a pasta já deve estar selecionada,
+        via `list_uids` ou `fetch_new` na mesma sessão)."""
+        return self._fetch_headers(uid)
+
+    def uids_presentes(self, pasta: str, uids: list[int]) -> set[int]:
+        """Reconciliação: quais desses UIDs ainda existem na pasta agora.
+
+        Os que sumiram saíram por fora do Apolo (lixeira/movido/apagado direto
+        no Proton). Um único UID SEARCH cobre o lote inteiro — sem round-trip
+        por mensagem.
+        """
+        if not uids:
+            return set()
+        assert self._imap is not None
+        self._select_readonly(pasta)
+        seq = ",".join(str(u) for u in uids)
+        typ, data = self._imap.uid("search", None, f"UID {seq}")
+        if typ != "OK":
+            raise RuntimeError(f"falha no UID SEARCH (reconciliação) em {pasta!r}")
+        raw_ids = data[0].split() if data and data[0] else []
+        return {int(x) for x in raw_ids}
+
+    def fetch_message_from(self, pasta: str, uid: int) -> Message | None:
+        """Seleciona a pasta (readonly) e busca a mensagem inteira (não marca lido).
+
+        Conveniência pra buscar um UID avulso fora de um fetch_new — ex.: a UI
+        puxando o corpo de um email só pra extrair o código de confirmação.
+        """
+        self._select_readonly(pasta)
+        return self.fetch_message(uid)
+
     def fetch_message(self, uid: int) -> Message | None:
         """Busca a mensagem inteira via BODY.PEEK[] (não marca lido).
 

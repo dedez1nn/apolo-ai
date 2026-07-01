@@ -103,6 +103,9 @@ class Config:
     folders: tuple[str, ...] = ("INBOX",)
     # Pasta de lixeira do Proton (atributo \Trash no Bridge).
     trash_folder: str = "Trash"
+    # Botão "Sincronizar" da UI: quantas mensagens mais recentes por pasta/conta
+    # buscar num full-scan, ignorando o ponteiro incremental (0 = sem limite).
+    sync_limit: int = 500
     # IA (Ollama) — classifica só o resíduo que as regras não resolveram.
     ai_enabled: bool = True
     ollama_url: str = "http://127.0.0.1:11434"
@@ -162,6 +165,7 @@ class Config:
             rules_path=rules_path,
             folders=folders or ("INBOX",),
             trash_folder=get("APOLO_TRASH_FOLDER", "Trash"),
+            sync_limit=int(get("APOLO_SYNC_LIMIT", "500")),
             ai_enabled=get("APOLO_AI_ENABLED", "true").lower() in ("1", "true", "yes", "sim"),
             ollama_url=get("APOLO_OLLAMA_URL") or get("OLLAMA_HOST") or "http://127.0.0.1:11434",
             ollama_model=get("APOLO_OLLAMA_MODEL", "llama3.2"),
