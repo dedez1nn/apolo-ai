@@ -306,6 +306,24 @@ class Storage:
                 (STATUS_DESPACHADO, acao_aplicada, _now(), pasta, uidvalidity, uid),
             )
 
+    def stuck_default_rows(self) -> list[sqlite3.Row]:
+        """Pendentes cuja cascata caiu no 'default' mas nunca passaram pela IA.
+
+        Cobre o caso em que o Ollama estava fora do ar (ou a IA desligada) na
+        passada em que o email chegou: só o lote recém-buscado daquela vez
+        passa pela IA (ver cmd_run), então esses UIDs antigos nunca são
+        revisitados a menos que alguém escaneie por `regra_casada = 'default'`
+        de novo — é isso que esta consulta faz.
+        """
+        return self.conn.execute(
+            """
+            SELECT conta, pasta, uidvalidity, uid, remetente, assunto, provider_id
+              FROM emails
+             WHERE status = ? AND regra_casada = 'default'
+            """,
+            (STATUS_AGUARDANDO,),
+        ).fetchall()
+
     # ----- reconciliação (passo: a pasta real pode ter mudado por fora) -----
     def pending_rows(self, pasta: str) -> list[sqlite3.Row]:
         """Emails dessa pasta ainda 'vivos' (nem despachados, nem já marcados como
