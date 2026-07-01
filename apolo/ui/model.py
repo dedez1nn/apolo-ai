@@ -55,3 +55,24 @@ class Item:
         self.data = row["data"] or ""
         self.regra = row["regra_casada"] or ""
         self.acao = row["acao_sugerida"] or ACAO_REVISAR
+        # True enquanto aguarda o Ollama (sincronização ao vivo) — não é uma
+        # ação de despacho, só um estado transitório de exibição.
+        self.analisando = False
+
+    @classmethod
+    def from_sync(cls, s, *, acao: str) -> "Item":
+        """Constrói a partir de um `SyncItem` (apolo.sync) — sem passar por `row`."""
+        obj = cls.__new__(cls)
+        obj.conta = s.conta
+        obj.pasta = s.pasta
+        obj.uidvalidity = s.uidvalidity
+        obj.uid = s.uid
+        obj.message_id = s.message_id
+        obj.provider_id = s.provider_id
+        obj.remetente = s.remetente or ""
+        obj.assunto = s.assunto or ""
+        obj.data = s.data or ""
+        obj.regra = ""
+        obj.acao = acao or ACAO_REVISAR
+        obj.analisando = False
+        return obj

@@ -7,6 +7,12 @@ d/m/b/a, a decisão tira o email da lista na hora (vai pra uma pilha de históri
 Enter aplica AGORA: despacha as decisões na hora (move pra lixeira via IMAP/
 Gmail) num modal com worker, e mostra o resultado. Sair sem aplicar (q/Esc)
 cancela as decisões da sessão (devolve à fila).
+
+`S` sincroniza: busca contas/pastas por completo (apolo.sync.run_sync) num
+worker em thread — não abre tela nem trava a navegação; os emails novos entram
+direto na lista, e os que dependem do Ollama aparecem como "analisando" até a
+resposta chegar, tudo ao vivo enquanto o dono continua decidindo/copiando
+código normalmente.
 """
 
 from __future__ import annotations
@@ -32,6 +38,13 @@ from apolo.ui.theme import (
     keybar,
 )
 
+# Status "analisando" (sincronização ao vivo) somado às ações normais — usado
+# só na exibição, nunca é gravado em `it.acao` (isso continua sendo lixeira/
+# manter/revisar pra fins de despacho).
+_STATUS_ICONE = {**ACAO_ICONE, "analisando": "…"}
+_STATUS_COR = {**ACAO_COR, "analisando": AMBER}
+_STATUS_ROTULO = {**ACAO_ROTULO, "analisando": "analisando"}
+
 
 class EmailRow(ListItem):
     """Duas linhas: [tag colorida] remetente … data / assunto (dim)."""
@@ -47,9 +60,10 @@ class EmailRow(ListItem):
 
     def _linha1(self) -> str:
         it = self.item
-        cor = ACAO_COR.get(it.acao, AZURE_BRT)
-        icone = ACAO_ICONE.get(it.acao, "·")
-        tag = ACAO_ROTULO.get(it.acao, it.acao).upper()
+        status = "analisando" if it.analisando else it.acao
+        cor = _STATUS_COR.get(status, AZURE_BRT)
+        icone = _STATUS_ICONE.get(status, "·")
+        tag = _STATUS_ROTULO.get(status, status).upper()
         rem = it.remetente or "(sem remetente)"
         badge = f"[{INK_FAINT}][{it.conta}][/] " if self._mostrar_badge else ""
         return f"[b {cor}]{icone} {tag:<8}[/]  {badge}{rem}"
@@ -73,6 +87,7 @@ class QueueScreen(Screen):
         Binding("a", "aprender('allowlist')", "allow"),
         Binding("u", "desfazer", "desfazer"),
         Binding("c", "pegar_codigo", "código"),
+        Binding("s", "sincronizar", "sincronizar"),
         Binding("tab", "alternar_conta", "conta", priority=True),
         Binding("enter", "aplicar", "aplicar", priority=True),
         Binding("escape,q", "voltar", "voltar"),
@@ -92,6 +107,7 @@ class QueueScreen(Screen):
                     ("B", "Bloquear", COR_LIXEIRA),
                     ("A", "Permitir", COR_MANTER),
                     ("C", "Código"),
+                    ("S", "Sincronizar"),
                     ("U", "Desfazer"),
                     ("⇥", "Conta"),
                     ("↵", "Aplicar"),
@@ -109,6 +125,12 @@ class QueueScreen(Screen):
         contas_ativas = getattr(self.app, "_contas_ativas", set())
         self._contas: list[str | None] = [None] + sorted(contas_ativas)
         self._filtro_idx = 0
+        # Sincronização ao vivo (bind S) — roda num worker em thread; não
+        # bloqueia a navegação nem as outras ações.
+        self._sync_ativo = False
+        self._sync_encontrados = 0
+        self._sync_analisando = 0
+        self._sync_rows: dict[tuple, EmailRow] = {}
         self.query_one("#q-list", ListView).focus()
         self._aplicar_filtro()
 
@@ -162,8 +184,14 @@ class QueueScreen(Screen):
         alterna = (
             f"    [{INK_FAINT}](⇥ conta: {rotulo_conta})[/]" if len(self._contas) > 2 else ""
         )
+        sync_txt = (
+            f"    [{AMBER}](⇄ sincronizando… {self._sync_encontrados} encontrado(s)"
+            f"{f', {self._sync_analisando} analisando' if self._sync_analisando else ''})[/]"
+            if self._sync_ativo
+            else ""
+        )
         self.query_one("#q-header", Static).update(
-            f"[b $accent]Revisar fila[/]   [{INK_DIM}]{n} restantes[/]{alterna}\n"
+            f"[b $accent]Revisar fila[/]   [{INK_DIM}]{n} restantes[/]{alterna}{sync_txt}\n"
             f"[{COR_LIXEIRA}]● {n_lix} lixeira[/]   [{COR_MANTER}]✓ {n_man} manter[/]{extra}"
         )
 
@@ -270,6 +298,85 @@ class QueueScreen(Screen):
             self._msg(f"[{COR_LIXEIRA}]configuração não carregada[/]")
             return
         self.app.push_screen(CodeModal(self._exibidos[idx]))
+
+    # ----- sincronizar (ao vivo, sem travar a tela) -----
+    def action_sincronizar(self) -> None:
+        if self._sync_ativo:
+            self._msg(f"[{AMBER}]sincronização já em andamento…[/]")
+            return
+        if not self.app.config:
+            self._msg(f"[{COR_LIXEIRA}]configuração não carregada[/]")
+            return
+        self._sync_ativo = True
+        self._sync_encontrados = 0
+        self._sync_analisando = 0
+        self._render_header()
+        self._msg(f"[{AMBER}]sincronizando em segundo plano…[/]")
+        self._sincronizar()
+
+    @work(thread=True, exclusive=True, group="sync")
+    def _sincronizar(self) -> None:
+        from apolo.sync import run_sync
+
+        def on_event(kind, *args, **kwargs) -> None:
+            self.app.call_from_thread(self._evento_sync, kind, args, kwargs)
+
+        try:
+            run_sync(self.app.config, limit=self.app.config.sync_limit, on_event=on_event)
+        except Exception as exc:
+            self.app.call_from_thread(self._evento_sync, "erro_fatal", (str(exc),), {})
+
+    def _evento_sync(self, kind: str, args: tuple, kwargs: dict) -> None:
+        try:
+            self._processar_evento_sync(kind, args, kwargs)
+        except Exception:
+            pass  # tela pode já ter sido fechada — o sync continua gravando no banco
+
+    def _processar_evento_sync(self, kind: str, args: tuple, kwargs: dict) -> None:
+        if kind == "item":
+            item = args[0]
+            self._sync_encontrados += 1
+            if item.sera_analisado:
+                self._sync_analisando += 1
+            novo = Item.from_sync(item, acao=item.status)
+            novo.analisando = item.sera_analisado
+            self._inserir_item_sync(novo)
+            self._render_header()
+        elif kind == "analisando":
+            item = args[0]
+            row = self._sync_rows.get((item.conta, item.pasta, item.uid))
+            if row is not None:
+                row.item.analisando = True
+                row.refresh_text()
+        elif kind == "classificado":
+            item = args[0]
+            self._sync_analisando = max(0, self._sync_analisando - 1)
+            row = self._sync_rows.get((item.conta, item.pasta, item.uid))
+            if row is not None:
+                row.item.analisando = False
+                row.item.acao = item.status
+                row.set_classes(f"email-row v-{item.status}")
+                row.refresh_text()
+            self._render_header()
+        elif kind == "erro":
+            self.app.notify(f"[{kwargs.get('conta')}] {kwargs.get('msg')}", severity="warning", title="sincronizar")
+        elif kind == "erro_fatal":
+            self._sync_ativo = False
+            self._msg(f"[{COR_LIXEIRA}]sincronização: {args[0]}[/]")
+            self._render_header()
+        elif kind == "fim":
+            self._sync_ativo = False
+            self._msg(f"[{AMBER}]sincronização concluída — {self._sync_encontrados} novo(s)[/]")
+            self._render_header()
+
+    def _inserir_item_sync(self, it: Item) -> None:
+        self.app.queue.append(it)
+        if self._conta_atual is not None and it.conta != self._conta_atual:
+            return
+        self._exibidos.append(it)
+        row = EmailRow(it, mostrar_badge=self._mostrar_badge())
+        self._sync_rows[(it.conta, it.pasta, it.uid)] = row
+        self._list.append(row)
 
     def action_alternar_conta(self) -> None:
         """Cicla a visão da fila entre "todas" e cada conta vinculada."""

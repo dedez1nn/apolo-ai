@@ -41,7 +41,6 @@ _MENU = [
     ("preview", "◎", "Prévia — o que as regras pegariam"),
     ("rules",   "▤", "Regras configuradas"),
     ("run",     "▶", "Rodar agora (uma passada)"),
-    ("sync",    "⇄", "Sincronizar (buscar tudo)"),
     ("retry_ia", "↻", "Reclassificar pendentes (IA)"),
     ("gmail",   "G", "Configurar Gmail"),
     ("config",  "⚙", "Configurações"),
@@ -147,10 +146,16 @@ class HubScreen(Screen):
 
     def _det_review(self) -> str:
         fila = self.app.queue
-        if not fila:
-            return self._titulo_det("Revisar fila") + f"\n[{INK_DIM}]Fila vazia — nada para revisar agora.[/]"
         cab = self._titulo_det("Revisar fila")
-        rodape = f"\n[{INK_DIM}]{len(fila)} email(s) aguardando · Enter para revisar[/]"
+        if not fila:
+            return (
+                cab
+                + f"\n[{INK_DIM}]Fila vazia — nada para revisar agora.\n\n"
+                f"Enter entra na listagem; lá dentro, S sincroniza\n"
+                f"(busca tudo) sem travar a tela — os emails novos já\n"
+                f"aparecem ao vivo, mesmo antes do Ollama responder.[/]"
+            )
+        rodape = f"\n[{INK_DIM}]{len(fila)} email(s) aguardando · Enter para revisar · S sincroniza (ao vivo)[/]"
         return cab + "\n".join(self._linhas_emails(fila)) + rodape
 
     def _det_add_rule(self) -> str:
@@ -211,20 +216,6 @@ class HubScreen(Screen):
             + f"\n[{INK_DIM}]Busca e classifica os emails uma vez, na hora,\n"
             f"sem abrir nenhuma outra tela.[/]\n\n"
             f"[{INK_DIM}]Última passada:[/] [b]{fmt_run(self.app.stats.last_run)}[/]"
-        )
-
-    def _det_sync(self) -> str:
-        limite = self.app.config.sync_limit if self.app.config else 500
-        limite_txt = "sem limite" if not limite else f"{limite} mais recentes"
-        return (
-            self._titulo_det("Sincronizar")
-            + f"\n[{INK_DIM}]Busca TODOS os emails de TODAS as contas vinculadas\n"
-            f"({limite_txt} por pasta), não só o delta desde a última\n"
-            f"passada — cobre o que ficou de fora (ex.: o cap de 50 do\n"
-            f"primeiro sync do Gmail).\n\n"
-            f"Cada email aparece na lista assim que a cascata decide;\n"
-            f"o que ela não resolver passa por 'analisando' até o\n"
-            f"Ollama responder — tudo ao vivo.[/]"
         )
 
     def _det_retry_ia(self) -> str:
@@ -351,12 +342,10 @@ class HubScreen(Screen):
     def _rotear(self, key: str) -> None:
         if key == "review":
             self._recarregar_fila()
-            if not self.app.queue:
-                self.notify("Fila vazia — nada pra revisar.", severity="information")
-                self._atualizar()
-                return
             from apolo.ui.queue import QueueScreen
 
+            # Entra mesmo com a fila vazia: é lá dentro que se sincroniza (S)
+            # sem travar a tela — a fila pode deixar de estar vazia ao vivo.
             self.app.push_screen(QueueScreen(), self._apos_listagem)
         elif key == "add_rule":
             from apolo.ui.rules_screen import AddRuleModal
@@ -389,13 +378,6 @@ class HubScreen(Screen):
                 self._atualizar()
 
             self.app.push_screen(RunModal(), _cb_run)
-        elif key == "sync":
-            if not self.app.config:
-                self.notify("Configuração não carregada.", severity="error")
-                return
-            from apolo.ui.sync_screen import SyncScreen
-
-            self.app.push_screen(SyncScreen(), lambda _=None: self._atualizar())
         elif key == "retry_ia":
             if not self.app.config:
                 self.notify("Configuração não carregada.", severity="error")
