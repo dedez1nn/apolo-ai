@@ -96,38 +96,76 @@ class GmailClient:
     def is_authorized(self) -> bool:
         return self.token_path.is_file()
 
-    def authorize(self) -> None:
-        """Device flow OAuth2. Imprime URL + código; bloqueia até o usuário autorizar."""
-        data = urllib.parse.urlencode({
+    def authorize(self, on_url=None) -> None:
+        """Authorization code flow com loopback redirect (RFC 8252).
+
+        Sobe um servidor HTTP temporário em 127.0.0.1 para capturar o código
+        de autorização. Requer OAuth client do tipo "Desktop app" no Google Cloud.
+
+        Se on_url for fornecido, chama on_url(auth_url) em vez de imprimir —
+        útil para a TUI exibir a URL na interface.
+        """
+        import http.server
+        import socket
+
+        # porta livre no loopback
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        redirect_uri = f"http://127.0.0.1:{port}"
+
+        params = urllib.parse.urlencode({
             "client_id": self.client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
             "scope": _SCOPE,
+            "access_type": "offline",
+            "prompt": "consent",
+        })
+        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
+
+        if on_url is not None:
+            on_url(auth_url)
+        else:
+            print(f"\nAutorizando conta Gmail '{self.name}':")
+            print(f"  Abra no browser: {auth_url}\n")
+
+        code_holder: list[str] = []
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                qs = urllib.parse.parse_qs(parsed.query)
+                if "code" in qs:
+                    code_holder.append(qs["code"][0])
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(
+                    b"<h2>Apolo: autorizado! Pode fechar esta aba.</h2>"
+                )
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
+        server.timeout = 300  # 5 minutos para o usuário autorizar
+        while not code_holder:
+            server.handle_request()
+        server.server_close()
+
+        data = urllib.parse.urlencode({
+            "code": code_holder[0],
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
         }).encode()
-        resp = self._http_post(_DEVICE_CODE_URL, data,
+        resp = self._http_post(_TOKEN_URL, data,
                                headers={"Content-Type": "application/x-www-form-urlencoded"})
-        device_code = resp["device_code"]
-        user_code = resp["user_code"]
-        verification_url = resp["verification_url"]
-        expires_in = int(resp.get("expires_in", 1800))
-        interval = int(resp.get("interval", 5))
-
-        print(f"\nAutorizando conta Gmail '{self.name}':")
-        print(f"  1. Acesse:  {verification_url}")
-        print(f"  2. Código:  {user_code}\n")
-
-        deadline = time.time() + expires_in
-        while time.time() < deadline:
-            time.sleep(interval)
-            try:
-                token = self._poll_device_token(device_code)
-                self._save_token(token)
-                print(f"✓ Conta '{self.name}' autorizada.")
-                return
-            except _AuthPending:
-                continue
-            except _SlowDown as e:
-                interval = e.interval
-
-        raise RuntimeError("Autorização expirou — tente novamente.")
+        token = self._token_from_response(resp)
+        self._save_token(token)
 
     def _poll_device_token(self, device_code: str) -> _Token:
         data = urllib.parse.urlencode({
@@ -256,10 +294,15 @@ class GmailClient:
 
     def _fetch_headers(self, gmail_id: str, token: str) -> FetchedEmail | None:
         try:
-            resp = self._api("GET", f"/users/me/messages/{gmail_id}", token=token, params={
-                "format": "metadata",
-                "metadataHeaders": "From,Subject,Date,Message-ID,List-Unsubscribe",
-            })
+            resp = self._api("GET", f"/users/me/messages/{gmail_id}", token=token,
+                             params=[
+                                 ("format", "metadata"),
+                                 ("metadataHeaders", "From"),
+                                 ("metadataHeaders", "Subject"),
+                                 ("metadataHeaders", "Date"),
+                                 ("metadataHeaders", "Message-ID"),
+                                 ("metadataHeaders", "List-Unsubscribe"),
+                             ])
         except urllib.error.HTTPError:
             return None
 
@@ -277,6 +320,68 @@ class GmailClient:
             provider_id=gmail_id,
         )
 
+    def list_ids(self, pasta: str, limit: int) -> tuple[list[str], int]:
+        """Lista até `limit` IDs de mensagem mais recentes da pasta, paginando
+        via messages.list + nextPageToken — sem o cap de 50 do `_first_sync`,
+        que é a causa de "não aparecem todos os emails" no Gmail.
+
+        Poucas chamadas no total (uma por página de até 500), bem mais rápido
+        que buscar o header de cada mensagem. Devolve (ids, historyId atual);
+        o chamador busca o header sob demanda com `fetch_header`, só pros IDs
+        que ainda não existem no banco (ver apolo.sync) — assim o progresso
+        aparece ao vivo em vez de um lote silencioso.
+        """
+        token = self._ensure_token()
+        profile = self._api("GET", "/users/me/profile", token=token)
+        history_id = int(profile["historyId"])
+
+        label = "INBOX" if pasta.upper() == "INBOX" else pasta
+        gmail_ids: list[str] = []
+        page_token = None
+        while limit <= 0 or len(gmail_ids) < limit:
+            page_size = min(500, limit - len(gmail_ids)) if limit > 0 else 500
+            params: dict = {"labelIds": label, "maxResults": str(page_size)}
+            if page_token:
+                params["pageToken"] = page_token
+            resp = self._api("GET", "/users/me/messages", token=token, params=params)
+            gmail_ids.extend(m["id"] for m in resp.get("messages", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+        return gmail_ids, history_id
+
+    def uid_for(self, gmail_id: str) -> int:
+        """UID determinístico de um ID do Gmail — sem chamada de rede, pra
+        filtrar contra o banco antes de gastar uma requisição buscando header."""
+        return _uid_from_gmail_id(gmail_id)
+
+    def fetch_header(self, gmail_id: str) -> FetchedEmail | None:
+        """Busca o header de uma única mensagem (uma requisição)."""
+        token = self._ensure_token()
+        return self._fetch_headers(gmail_id, token)
+
+    def uids_presentes(self, gmail_ids: list[str], label: str = "INBOX") -> set[str]:
+        """Reconciliação: quais desses IDs ainda têm o label (ex.: INBOX) agora.
+
+        Os que sumiram saíram por fora do Apolo (lixeira/arquivado/apagado
+        direto no Gmail) — inclui IDs apagados de vez (404). format=minimal
+        evita puxar headers/corpo, só os labelIds.
+        """
+        token = self._ensure_token()
+        presentes: set[str] = set()
+        for gid in gmail_ids:
+            try:
+                resp = self._api("GET", f"/users/me/messages/{gid}", token=token,
+                                 params={"format": "minimal"})
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    continue
+                raise
+            if label in resp.get("labelIds", []):
+                presentes.add(gid)
+        return presentes
+
     def fetch_message(self, gmail_id: str) -> str:
         """Retorna trecho de texto do corpo (para a IA). Falha silenciosa → ''."""
         token = self._ensure_token()
@@ -286,6 +391,27 @@ class GmailClient:
         except urllib.error.HTTPError:
             return ""
         return _extract_text(resp.get("payload", {}))[:2000]
+
+    def fetch_raw(self, gmail_id: str):
+        """Busca a mensagem RFC822 crua (format=raw) como email.message.Message.
+
+        Diferente de fetch_message (que só pega o text/plain truncado pra IA),
+        isto devolve a mensagem inteira — assim a UI roda apolo.clean.message_to_text
+        e enxerga também o corpo HTML, onde códigos/links costumam estar.
+        """
+        import base64
+        import email
+
+        token = self._ensure_token()
+        try:
+            resp = self._api("GET", f"/users/me/messages/{gmail_id}", token=token,
+                             params={"format": "raw"})
+        except urllib.error.HTTPError:
+            return None
+        raw = resp.get("raw")
+        if not raw:
+            return None
+        return email.message_from_bytes(base64.urlsafe_b64decode(raw))
 
     # ----- ações -----
 
@@ -297,7 +423,7 @@ class GmailClient:
     # ----- HTTP helpers -----
 
     def _api(self, method: str, path: str, *, token: str,
-             params: dict | None = None, body: dict | None = None) -> dict:
+             params: dict | list | None = None, body: dict | None = None) -> dict:
         url = _BASE + path
         if params:
             url += "?" + urllib.parse.urlencode(params)

@@ -353,6 +353,39 @@ class Storage:
             )
 
     # ----- log de ações (sustenta o undo, passo 6) -----
+    def emails_sem_remetente(self, conta_prefix: str) -> list[sqlite3.Row]:
+        """Retorna emails de contas Gmail com remetente vazio e provider_id preenchido."""
+        return self.conn.execute(
+            """
+            SELECT pasta, uidvalidity, uid, provider_id
+              FROM emails
+             WHERE conta LIKE ?
+               AND provider_id IS NOT NULL
+               AND (remetente IS NULL OR remetente = '')
+            """,
+            (conta_prefix + "%",),
+        ).fetchall()
+
+    def update_email_headers(
+        self,
+        *,
+        pasta: str,
+        uidvalidity: int,
+        uid: int,
+        remetente: str,
+        assunto: str,
+        data: str,
+    ) -> None:
+        with self._tx() as conn:
+            conn.execute(
+                """
+                UPDATE emails
+                   SET remetente = ?, assunto = ?, data = ?
+                 WHERE pasta = ? AND uidvalidity = ? AND uid = ?
+                """,
+                (remetente, assunto, data, pasta, uidvalidity, uid),
+            )
+
     def log_action(
         self,
         *,

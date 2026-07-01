@@ -113,6 +113,8 @@ class Config:
     ollama_keep_alive: str = "30m"
     accounts_path: Path = field(default_factory=_default_accounts_path)
     tokens_dir: Path = field(default_factory=_default_tokens_dir)
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
 
     @classmethod
     def load(cls) -> "Config":
@@ -172,6 +174,8 @@ class Config:
             ollama_keep_alive=get("APOLO_OLLAMA_KEEP_ALIVE", "30m"),
             accounts_path=accounts_path,
             tokens_dir=tokens_dir,
+            gmail_client_id=get("APOLO_GMAIL_CLIENT_ID"),
+            gmail_client_secret=get("APOLO_GMAIL_CLIENT_SECRET"),
         )
 
     def require_credentials(self) -> None:
