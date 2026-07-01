@@ -75,3 +75,115 @@ nome = "newsletter"
 campo = "assunto"
 acao = "revisar"
 padroes = ["newsletter", "novidades", "resumo da semana"]
+
+# Camada 2 — só roda quando o Ollama sugeriu "lixeira" (rede de segurança
+# contra o modelo pequeno subestimar algo sensível). Soma o peso dos termos que
+# baterem no assunto/remetente/trecho; se passar do "limiar" da categoria,
+# rebaixa a sugestão pra "revisar" (nunca promove direto pra "manter"). Termos
+# em termos_pt/termos_en só entram se o idioma do email foi identificado como
+# tal; termos_ambos (loanwords, nomes próprios, domínios) sempre entram. Pesos
+# e limiares abaixo são um primeiro palpite — ajuste olhando casos reais.
+
+[verify.seguranca]
+limiar = 5
+
+[verify.seguranca.termos_ambos]
+login = 2
+password = 2
+2fa = 2
+otp = 3
+
+[verify.seguranca.termos_pt]
+"tentativa de login" = 4
+"tentativa de acesso" = 4
+"novo login" = 3
+"novo acesso" = 3
+"acesso não reconhecido" = 3
+"acesso nao reconhecido" = 3
+"dispositivo desconhecido" = 3
+"alerta de segurança" = 3
+"alerta de seguranca" = 3
+"senha alterada" = 3
+"verificação de segurança" = 3
+"verificacao de seguranca" = 3
+"código de verificação" = 3
+"codigo de verificacao" = 3
+"código de segurança" = 3
+"codigo de seguranca" = 3
+
+[verify.seguranca.termos_en]
+"login attempt" = 4
+"sign-in attempt" = 4
+"sign in attempt" = 4
+"new device" = 3
+"new sign-in" = 3
+"suspicious login" = 3
+"security alert" = 3
+"verify your identity" = 3
+"password changed" = 3
+"password reset" = 3
+"security code" = 3
+"two-factor" = 3
+"two-step" = 3
+
+[verify.bancario]
+limiar = 5
+
+[verify.bancario.termos_ambos]
+nubank = 5
+itau = 4
+"itaú" = 4
+bradesco = 4
+santander = 4
+picpay = 3
+pix = 3
+
+[verify.bancario.termos_pt]
+boleto = 4
+fatura = 3
+"cobrança" = 3
+cobranca = 3
+extrato = 3
+"cartão de crédito" = 3
+"cartao de credito" = 3
+"conta corrente" = 3
+vencimento = 2
+
+[verify.bancario.termos_en]
+invoice = 3
+statement = 3
+"credit card" = 3
+"bank account" = 3
+"payment due" = 3
+billing = 2
+
+[verify.faculdade]
+limiar = 5
+
+[verify.faculdade.termos_ambos]
+blackboard = 5
+moodle = 4
+classroom = 3
+".edu.br" = 4
+
+[verify.faculdade.termos_pt]
+universidade = 3
+faculdade = 4
+disciplina = 3
+"matrícula" = 4
+matricula = 4
+boletim = 3
+aluno = 2
+professor = 2
+campus = 2
+
+[verify.faculdade.termos_en]
+university = 3
+college = 3
+course = 2
+enrollment = 3
+syllabus = 3
+grade = 2
+student = 2
+professor = 2
+campus = 2
