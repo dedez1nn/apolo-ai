@@ -416,9 +416,34 @@ class GmailClient:
     # ----- ações -----
 
     def trash_message(self, gmail_id: str) -> None:
-        """Move a mensagem para a lixeira via API."""
+        """Move a mensagem para a lixeira via API (um item só — ver trash_messages_batch)."""
         token = self._ensure_token()
         self._api("POST", f"/users/me/messages/{gmail_id}/trash", token=token)
+
+    def trash_messages_batch(self, gmail_ids: list[str], *, chunk_size: int = 1000) -> None:
+        """Move várias mensagens pra lixeira numa chamada só (batchModify).
+
+        Bem mais barato que `trash_message` por item: 1 POST cobre até 1000
+        IDs, contra 1 POST por email — menos round-trips e menos chance de
+        estourar o rate limit da API (quota é por requisição também, não só
+        por unidade). `batchModify` responde 204 sem corpo.
+
+        Ao contrário do endpoint dedicado `/trash` (usado em `trash_message`),
+        `batchModify` só aplica os labels que você pedir — sem remover INBOX
+        por conta própria. Sem o `removeLabelIds` aqui, a mensagem fica com
+        TRASH *e* INBOX ao mesmo tempo: some da vista mas ainda casa com o
+        filtro `labelIds=INBOX` do `list_ids`, e volta pra fila no próximo
+        sync (loop de itens da lixeira reaparecendo pra revisão).
+        """
+        if not gmail_ids:
+            return
+        token = self._ensure_token()
+        for i in range(0, len(gmail_ids), chunk_size):
+            chunk = gmail_ids[i : i + chunk_size]
+            self._api(
+                "POST", "/users/me/messages/batchModify", token=token,
+                body={"ids": chunk, "addLabelIds": ["TRASH"], "removeLabelIds": ["INBOX", "UNREAD"]},
+            )
 
     # ----- HTTP helpers -----
 
