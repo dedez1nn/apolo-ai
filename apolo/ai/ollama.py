@@ -11,11 +11,14 @@ ausente, JSON inválido) é engolida e o email fica como estava (resíduo/revisa
 """
 
 import json
+import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR
+
+logger = logging.getLogger("apolo.ai.ollama")
 
 _ACOES_VALIDAS = {ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR}
 
@@ -104,7 +107,8 @@ class OllamaClient:
             data = self._post("/api/generate", payload)
             raw = data.get("response", "")
             parsed = json.loads(raw)
-        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as e:
+            logger.warning("classify falhou (modelo=%s, assunto=%r): %s", self.model, assunto, e)
             return None
 
         acao = str(parsed.get("acao", "")).lower().strip()
