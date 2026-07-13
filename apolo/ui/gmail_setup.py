@@ -11,16 +11,15 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static
-def _esc(s: str) -> str:
-    """Escapa colchetes para evitar MarkupError no Textual."""
-    return s.replace("[", "\\[").replace("]", "\\]")
+from textual.widgets import Button, Input, Label, Select, Static
 
-from apolo.ui.theme import AZURE_BRT, COR_LIXEIRA, COR_MANTER, INK_DIM, keybar
+from apolo.ui.theme import AZURE_BRT, COR_LIXEIRA, COR_MANTER, INK_DIM, keybar, mesc
+
+_NOVA_CONTA = ""  # valor sentinela do Select — "" = formulário em branco
 
 
 class GmailSetupModal(ModalScreen):
-    """Adiciona uma conta Gmail via OAuth2 device flow."""
+    """Adiciona, reautoriza ou remove uma conta Gmail via OAuth2 device flow."""
 
     BINDINGS = [
         Binding("escape", "cancelar", "cancelar"),
@@ -38,11 +37,15 @@ class GmailSetupModal(ModalScreen):
                     f"(APOLO_GMAIL_CLIENT_ID / APOLO_GMAIL_CLIENT_SECRET).[/]",
                 )
                 with Horizontal(classes="cfg-row"):
+                    yield Label("Conta existente", classes="cfg-lbl")
+                    yield Select(self._opcoes_contas(), value=_NOVA_CONTA, allow_blank=False, id="g-existing")
+                with Horizontal(classes="cfg-row"):
                     yield Label("Nome da conta", classes="cfg-lbl")
                     yield Input(placeholder="gmail", id="g-name")
                 yield Static("", id="g-form-msg", classes="flash")
                 with Horizontal(id="cfg-actions"):
                     yield Button("Autorizar  (ctrl+s)", variant="primary", id="g-auth")
+                    yield Button("Remover conta", variant="error", id="g-delete")
                     yield Button("Cancelar  (esc)", id="g-cancel")
 
             # ── fase 2: auth flow (oculto até autorizar) ───────────────────
@@ -71,6 +74,35 @@ class GmailSetupModal(ModalScreen):
             self.action_autorizar()
         elif bid in ("g-cancel", "g-close"):
             self.dismiss(None)
+        elif bid == "g-delete":
+            self.action_remover()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "g-existing":
+            name = str(event.value) if event.value is not None else ""
+            self.query_one("#g-name", Input).value = name
+
+    def action_remover(self) -> None:
+        msg = self.query_one("#g-form-msg", Static)
+        atual = self.query_one("#g-existing", Select).value
+        if not atual:
+            msg.update(f"[{COR_LIXEIRA}]selecione uma conta existente pra remover.[/]")
+            return
+
+        try:
+            self._remover_conta(atual)
+        except Exception as e:
+            msg.update(f"[{COR_LIXEIRA}]erro ao remover: {mesc(str(e))}[/]")
+            return
+
+        token_path = self._cfg().tokens_dir / f"{atual}.json"
+        if token_path.is_file():
+            token_path.unlink()
+
+        nome_removido = atual
+        self.query_one("#g-name", Input).value = ""
+        self._atualizar_select(selecionar=_NOVA_CONTA)
+        msg.update(f"[{COR_MANTER} b]✓ conta '{mesc(nome_removido)}' removida.[/]")
 
     def action_autorizar(self) -> None:
         cfg = self._cfg()
@@ -105,8 +137,23 @@ class GmailSetupModal(ModalScreen):
         from apolo.config import Config
         return Config.load()
 
+    def _contas_existentes(self):
+        from apolo.config import load_accounts
+
+        return [a for a in load_accounts(self._cfg().accounts_path) if a.provider == "gmail"]
+
+    def _opcoes_contas(self):
+        return [("— nova conta —", _NOVA_CONTA)] + [(c.name, c.name) for c in self._contas_existentes()]
+
+    def _atualizar_select(self, *, selecionar: str) -> None:
+        sel = self.query_one("#g-existing", Select)
+        sel.set_options(self._opcoes_contas())
+        sel.value = selecionar
+
     def _salvar_conta(self, name: str, cid: str, csec: str) -> None:
         import tomllib
+
+        from apolo.cli import _write_accounts_toml
 
         cfg = self._cfg()
         path = cfg.accounts_path
@@ -119,27 +166,29 @@ class GmailSetupModal(ModalScreen):
                 existing = tomllib.load(f)
 
         accounts = existing.get("accounts", [])
+        entry = {"name": name, "provider": "gmail", "client_id": cid, "client_secret": csec, "folders": ["INBOX"]}
         found = next((a for a in accounts if a.get("name") == name), None)
         if found is None:
-            accounts.append({
-                "name": name, "provider": "gmail",
-                "client_id": cid, "client_secret": csec,
-                "folders": ["INBOX"],
-            })
+            accounts.append(entry)
         else:
-            found["client_id"] = cid
-            found["client_secret"] = csec
-        lines = []
-        for acc in accounts:
-            if lines:
-                lines.append("")
-            lines.append("[[accounts]]")
-            lines.append(f'name = "{acc["name"]}"')
-            lines.append(f'provider = "{acc["provider"]}"')
-            lines.append(f'client_id = "{acc["client_id"]}"')
-            lines.append(f'client_secret = "{acc["client_secret"]}"')
-            lines.append(f'folders = {acc["folders"]!r}')
-        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            found.update(entry)
+
+        _write_accounts_toml(path, accounts)
+        path.chmod(0o600)
+
+    def _remover_conta(self, name: str) -> None:
+        import tomllib
+
+        from apolo.cli import _write_accounts_toml
+
+        cfg = self._cfg()
+        path = cfg.accounts_path
+        if not path.is_file():
+            return
+        with path.open("rb") as f:
+            existing = tomllib.load(f)
+        accounts = [a for a in existing.get("accounts", []) if a.get("name") != name]
+        _write_accounts_toml(path, accounts)
         path.chmod(0o600)
 
     # ── device flow (thread) ───────────────────────────────────────────────
@@ -173,7 +222,7 @@ class GmailSetupModal(ModalScreen):
     def _show_device_info(self, url: str) -> None:
         self.query_one("#g-url", Static).update(
             f"[{INK_DIM}]Abra no browser e autorize:[/]\n\n"
-            f"  [{AZURE_BRT}]{_esc(url)}[/]\n\n"
+            f"  [{AZURE_BRT}]{mesc(url)}[/]\n\n"
             f"[{INK_DIM}]Após autorizar o browser vai redirecionar para localhost\n"
             f"e a tela atualiza automaticamente.[/]"
         )
@@ -185,17 +234,19 @@ class GmailSetupModal(ModalScreen):
         log = Path.home() / ".local" / "share" / "apolo" / "gmail_setup.log"
         try:
             self.query_one("#g-status", Static).update(
-                f"[{COR_LIXEIRA}]Erro: {_esc(msg)}[/]"
+                f"[{COR_LIXEIRA}]Erro: {mesc(msg)}[/]"
             )
             log.write_text(log.read_text() + "\n_show_error OK\n", encoding="utf-8")
         except Exception:
             log.write_text(log.read_text() + f"\n_show_error FALHOU:\n{traceback.format_exc()}\n", encoding="utf-8")
 
     def _show_success(self, name: str) -> None:
+        # Token novo gravado — a conta deixa de ser ignorada pelo sincronizar.
+        getattr(self.app, "contas_invalidas", {}).pop(f"gmail:{name}", None)
         try:
             self.query_one("#g-status").display = False
             self.query_one("#g-result", Static).update(
-                f"[{COR_MANTER} b]✓ Conta '{_esc(name)}' autorizada![/]\n"
+                f"[{COR_MANTER} b]✓ Conta '{mesc(name)}' autorizada![/]\n"
                 f"[{INK_DIM}]Feche e use 'Rodar agora' para buscar os emails.[/]"
             )
         except Exception:
