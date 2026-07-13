@@ -11,8 +11,8 @@ from textual.screen import Screen
 from textual.widgets import Static
 
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR, RuleEngine
-from apolo.ui.model import ACAO_ICONE
-from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, COR_REVISAR, INK_DIM, INK_FAINT, keybar
+from apolo.ui.model import ACAO_ICONE, fmt_remetente
+from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, COR_REVISAR, INK_DIM, INK_FAINT, keybar, mesc
 
 _ACAO_COR = {ACAO_LIXEIRA: COR_LIXEIRA, ACAO_MANTER: COR_MANTER, ACAO_REVISAR: COR_REVISAR}
 
@@ -61,8 +61,9 @@ class PreviewScreen(Screen):
                 f"\n[{cor}]{icone} {acao:<9}[/] [{INK_FAINT}]·[/] [b]{regra}[/]  [{INK_FAINT}]({len(itens)})[/]"
             )
             for it in itens[:10]:
-                assunto = (it.assunto or "")[:50]
-                linhas.append(f"   [{cor}]▌[/] {it.remetente[:36]:<36} [{INK_FAINT}]{assunto}[/]")
+                assunto = mesc((it.assunto or "")[:50])
+                rem = mesc(f"{fmt_remetente(it.remetente)[:36]:<36}")
+                linhas.append(f"   [{cor}]▌[/] {rem} [{INK_FAINT}]{assunto}[/]")
             if len(itens) > 10:
                 linhas.append(f"   [{INK_FAINT}]… e mais {len(itens) - 10}[/]")
 

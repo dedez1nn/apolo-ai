@@ -23,7 +23,8 @@ from apolo.rules.writer import (
     normalize_valor,
     remove_rule_entry,
 )
-from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, INK_DIM, INK_FAINT, keybar
+from apolo.ui.model import fmt_remetente
+from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, INK_DIM, INK_FAINT, keybar, mesc
 
 # cor + ícone + classe de gutter por lista
 _LISTA_COR = {"allowlist": COR_MANTER, "blocklist": COR_LIXEIRA}
@@ -235,8 +236,9 @@ class AddRuleModal(ModalScreen):
             return
         linhas = [f"[b $accent]prévia · casaria {len(casados)} na fila[/]"]
         for it in casados[:8]:
-            assunto = (it.assunto or "")[:48]
-            linhas.append(f"  [{COR_MANTER}]›[/] {it.remetente[:34]:<34} [{INK_FAINT}]{assunto}[/]")
+            assunto = mesc((it.assunto or "")[:48])
+            rem = mesc(f"{fmt_remetente(it.remetente)[:34]:<34}")
+            linhas.append(f"  [{COR_MANTER}]›[/] {rem} [{INK_FAINT}]{assunto}[/]")
         if len(casados) > 8:
             linhas.append(f"  [{INK_FAINT}]… e mais {len(casados) - 8}[/]")
         prev.update("\n".join(linhas))
@@ -323,8 +325,9 @@ class EditRuleModal(ModalScreen):
             return
         linhas = [f"[b $accent]prévia · casaria {len(casados)} na fila[/]"]
         for it in casados[:8]:
-            assunto = (it.assunto or "")[:48]
-            linhas.append(f"  [{COR_MANTER}]›[/] {it.remetente[:34]:<34} [{INK_FAINT}]{assunto}[/]")
+            assunto = mesc((it.assunto or "")[:48])
+            rem = mesc(f"{fmt_remetente(it.remetente)[:34]:<34}")
+            linhas.append(f"  [{COR_MANTER}]›[/] {rem} [{INK_FAINT}]{assunto}[/]")
         if len(casados) > 8:
             linhas.append(f"  [{INK_FAINT}]… e mais {len(casados) - 8}[/]")
         prev.update("\n".join(linhas))

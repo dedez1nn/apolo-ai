@@ -16,7 +16,7 @@ from textual.screen import Screen
 from textual.widgets import Label, Static, Switch
 
 from apolo.ui.model import ACAO_COR, ACAO_ICONE, ACAO_ROTULO
-from apolo.ui.theme import AZURE_BRT, INK_DIM, INK_FAINT, keybar
+from apolo.ui.theme import AZURE_BRT, INK_DIM, INK_FAINT, keybar, mesc
 
 
 class SuggestionRow(Horizontal):
@@ -31,7 +31,7 @@ class SuggestionRow(Horizontal):
         cor = ACAO_COR.get(s.acao, AZURE_BRT)
         icone = ACAO_ICONE.get(s.acao, "·")
         rotulo = ACAO_ROTULO.get(s.acao, s.acao).upper()
-        alvo = s.dominio if s.tipo == "dominio" else f"{s.dominio}  [{INK_FAINT}]“{s.assunto}”[/]"
+        alvo = s.dominio if s.tipo == "dominio" else f"{s.dominio}  [{INK_FAINT}]“{mesc(s.assunto)}”[/]"
         texto = (
             f"[b {cor}]{icone} {rotulo:<8}[/]  {alvo}\n"
             f"  [{INK_FAINT}]{s.concordantes}/{s.total} · {s.frequencia}[/]"
