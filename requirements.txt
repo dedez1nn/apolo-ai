@@ -1,3 +1,6 @@
 # Dependências externas do Apolo — apenas a UI (apolo/ui/) usa Textual.
 # O núcleo (fetch/rules/ai/storage/actions) e o `apolo run` seguem 100% stdlib.
 textual>=8,<9
+# Renderiza os carimbos (PNG) do modo swipe — imagem de verdade via protocolo
+# gráfico do terminal (kitty/iTerm/sixel), com fallback em blocos Unicode.
+textual-image>=0.13,<0.14
