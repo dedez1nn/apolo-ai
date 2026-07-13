@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import urllib.error
 import urllib.parse
@@ -25,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from apolo.fetch import FetchedEmail, FolderResult
+
+logger = logging.getLogger("apolo.fetch.gmail")
 
 _BASE = "https://gmail.googleapis.com/gmail/v1"
 _DEVICE_CODE_URL = "https://oauth2.googleapis.com/device/code"
@@ -95,6 +98,30 @@ class GmailClient:
 
     def is_authorized(self) -> bool:
         return self.token_path.is_file()
+
+    def check_token(self) -> str | None:
+        """Valida a credencial AGORA (toca a rede). None se ok, senão o motivo.
+
+        Renovar um token expirado é onde `invalid_grant` (revogado/expirado)
+        aparece; se o access token local ainda não venceu, a chamada leve a
+        /users/me/profile pega revogação do outro lado. Problemas de rede ou
+        do servidor não condenam o token — aí devolve None (benefício da
+        dúvida: o sync tenta e reporta o erro real).
+        """
+        if not self.is_authorized():
+            return "conta não autorizada"
+        try:
+            token = self._ensure_token()
+            self._api("GET", "/users/me/profile", token=token)
+        except RuntimeError as e:
+            return str(e)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return f"credencial recusada pelo Gmail (HTTP {e.code})"
+            return None
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
+        return None
 
     def authorize(self, on_url=None) -> None:
         """Authorization code flow com loopback redirect (RFC 8252).
@@ -202,8 +229,20 @@ class GmailClient:
             "refresh_token": token.refresh_token,
             "grant_type": "refresh_token",
         }).encode()
-        resp = self._http_post(_TOKEN_URL, data,
-                               headers={"Content-Type": "application/x-www-form-urlencoded"})
+        try:
+            resp = self._http_post(_TOKEN_URL, data,
+                                   headers={"Content-Type": "application/x-www-form-urlencoded"})
+        except urllib.error.HTTPError as e:
+            try:
+                err = json.loads(e.read()).get("error", "")
+            except (ValueError, OSError):
+                err = ""
+            if err in ("invalid_grant", "invalid_token"):
+                raise RuntimeError(
+                    f"Conta '{self.name}': token expirado ou revogado ({err}). "
+                    f"Reautorize: apolo accounts add --name {self.name}"
+                ) from e
+            raise
         return _Token(
             access_token=resp["access_token"],
             refresh_token=resp.get("refresh_token") or token.refresh_token,
@@ -303,7 +342,8 @@ class GmailClient:
                                  ("metadataHeaders", "Message-ID"),
                                  ("metadataHeaders", "List-Unsubscribe"),
                              ])
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as e:
+            logger.warning("fetch_header de %s falhou (HTTP %s): %s", gmail_id, e.code, e)
             return None
 
         headers = {
@@ -375,7 +415,9 @@ class GmailClient:
                 resp = self._api("GET", f"/users/me/messages/{gid}", token=token,
                                  params={"format": "minimal"})
             except urllib.error.HTTPError as e:
-                if e.code == 404:
+                if e.code in (400, 404):
+                    logger.warning("reconciliação gmail: id %s inválido/ausente (HTTP %s) — tratando como removido.",
+                                   gid, e.code)
                     continue
                 raise
             if label in resp.get("labelIds", []):
@@ -388,7 +430,8 @@ class GmailClient:
         try:
             resp = self._api("GET", f"/users/me/messages/{gmail_id}", token=token,
                              params={"format": "full"})
-        except urllib.error.HTTPError:
+        except urllib.error.HTTPError as e:
+            logger.warning("fetch_message de %s falhou (HTTP %s): %s", gmail_id, e.code, e)
             return ""
         return _extract_text(resp.get("payload", {}))[:2000]
 
@@ -448,7 +491,13 @@ class GmailClient:
     # ----- HTTP helpers -----
 
     def _api(self, method: str, path: str, *, token: str,
-             params: dict | list | None = None, body: dict | None = None) -> dict:
+             params: dict | list | None = None, body: dict | None = None,
+             max_retries: int = 5) -> dict:
+        """Chama a API; em 429 (rate limit) espera e retenta em vez de estourar.
+
+        Usa o `Retry-After` da resposta quando vem; senão backoff exponencial
+        (1s, 2s, 4s, ... até 30s). Esgotados os retries, propaga o erro.
+        """
         url = _BASE + path
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -460,8 +509,25 @@ class GmailClient:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        delay = 1.0
+        for tentativa in range(1, max_retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    raw = resp.read()
+                return json.loads(raw.decode("utf-8")) if raw else {}
+            except urllib.error.HTTPError as e:
+                if e.code != 429 or tentativa == max_retries:
+                    if e.code == 429:
+                        logger.warning("Gmail API rate limit (429) em %s — desisti após %d tentativa(s).",
+                                       path, tentativa)
+                    raise
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                espera = float(retry_after) if retry_after else delay
+                logger.warning("Gmail API rate limit (429) em %s — tentativa %d/%d, esperando %.0fs.",
+                               path, tentativa, max_retries, espera)
+                time.sleep(espera)
+                delay = min(delay * 2, 30.0)
+        raise AssertionError("inalcançável")  # loop sempre retorna ou levanta
 
     def _http_post(self, url: str, data: bytes, *, headers: dict) -> dict:
         req = urllib.request.Request(url, data=data, method="POST", headers=headers)

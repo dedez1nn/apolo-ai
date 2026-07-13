@@ -14,7 +14,8 @@ Lê com tomllib (stdlib, Python 3.11+); nenhuma dependência externa.
 
 import tomllib
 from dataclasses import dataclass
-from email.utils import parseaddr
+from datetime import datetime, timedelta, timezone
+from email.utils import parseaddr, parsedate_to_datetime
 from pathlib import Path
 
 # Ações sugeridas possíveis.
@@ -23,6 +24,13 @@ ACAO_LIXEIRA = "lixeira"
 ACAO_REVISAR = "revisar"
 
 _ACOES_VALIDAS = {ACAO_MANTER, ACAO_LIXEIRA, ACAO_REVISAR}
+
+# Pseudo-ação: nunca sai da cascata (TOML não pode configurar isso, por isso
+# fica fora de _ACOES_VALIDAS) — é o sync/cli que a atribui quando o resíduo
+# cai em 'default' e a IA está desligada. Sinaliza "ninguém decidiu nada"
+# (nem regra, nem IA), diferente de 'revisar' (que sugere um sinal explícito
+# — ex.: keyword configurada pra 'revisar' — pedindo confirmação humana).
+ACAO_PENDENTE = "pendente"
 
 # 2º sinal exigido pela regra do List-Unsubscribe (ver classify). Usado quando o
 # TOML não traz [unsubscribe].exige — instalações antigas ganham o comportamento
@@ -146,6 +154,41 @@ class RuleEngine:
 
         # 6. default — sem confiança, vai pra fila e não faz nada.
         return Decision("desconhecido", ACAO_REVISAR, "default")
+
+
+def eh_recente(data_raw: str, dias: int = 90) -> bool:
+    """Header Date -> True se dentro dos últimos `dias` (padrão: 3 meses).
+
+    Header ausente ou malformado conta como recente — melhor mandar pra IA de
+    mais do que perder um email por causa de um header que não deu pra ler.
+    """
+    if not data_raw:
+        return True
+    try:
+        dt = parsedate_to_datetime(data_raw)
+    except (TypeError, ValueError, IndexError):
+        return True
+    if dt is None:
+        return True
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt >= datetime.now(timezone.utc) - timedelta(days=dias)
+
+
+def acao_efetiva(decisao: Decision, ai_ready: bool, recente: bool = True) -> str:
+    """Ação de fato a gravar/exibir, dada se a IA vai rodar nesta passada.
+
+    'default' + (IA desligada OU email com mais de `dias` — ver eh_recente) ->
+    ninguém vai analisar isso por padrão: ACAO_PENDENTE, não ACAO_REVISAR (que
+    soaria como uma decisão explícita da cascata). Emails antigos só passam
+    pela IA se pedido explicitamente (ex.: "Reclassificar pendentes (IA)" no
+    Hub, ou `apolo retry-ia`), que não filtra por idade. Qualquer outro caso
+    segue a sugestão da cascata sem alteração — inclusive 'default' com IA
+    ligada e recente, que já vai ser reclassificado logo em seguida.
+    """
+    if decisao.regra_casada == "default" and not (ai_ready and recente):
+        return ACAO_PENDENTE
+    return decisao.acao_sugerida
 
 
 def _get_list(rules: dict, secao: str, chave: str) -> list[str]:

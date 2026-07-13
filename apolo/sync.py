@@ -14,6 +14,7 @@ até a resposta — sem travar a tela, é um worker em thread separada.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
@@ -21,11 +22,17 @@ from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import Config, load_accounts
 from apolo.fetch.imap import BridgeClient
-from apolo.rules.engine import RuleEngine
+from apolo.rules.engine import RuleEngine, acao_efetiva, eh_recente
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 from apolo.verify import VerifyConfig, apply_ia_decision
 
+logger = logging.getLogger("apolo.sync")
+
 OnEvent = Callable[..., None]
+
+# Ver MAX_FALHAS_SEGUIDAS em apolo.fetch.imap: mesmo raciocínio aqui — parar
+# depois de falhas seguidas em vez de estourar e perder o residuo já achado.
+MAX_FALHAS_SEGUIDAS = 5
 
 
 @dataclass
@@ -46,11 +53,18 @@ class SyncItem:
     provider_id: str | None = None
 
 
-def run_sync(config: Config, *, limit: int, on_event: OnEvent) -> None:
-    """Varre todas as contas vinculadas e classifica o que ainda não estava no banco.
+def run_sync(
+    config: Config, *, limit: int, on_event: OnEvent,
+    skip_contas: set[str] | None = None, only_conta: str | None = None,
+) -> None:
+    """Varre as contas vinculadas e classifica o que ainda não estava no banco.
 
     Erros por conta/pasta (Bridge fora, conta Gmail não autorizada, etc.) são
     reportados via `on_event("erro", ...)` e não interrompem as demais contas.
+    `skip_contas` (ids tipo "gmail:<nome>") pula contas já sabidamente com
+    credencial inválida — a checagem de token da abertura do app alimenta isso.
+    `only_conta` restringe a UMA conta ("proton" ou "gmail:<nome>") — é o filtro
+    de conta (⇥) da fila de revisão; None varre todas.
     """
     engine = RuleEngine.from_file(config.rules_path)
     verify_config = VerifyConfig.from_file(config.rules_path)
@@ -58,24 +72,68 @@ def run_sync(config: Config, *, limit: int, on_event: OnEvent) -> None:
     ai_ready = config.ai_enabled and ollama.available()
 
     with Storage(config.db_path) as store:
-        try:
-            config.require_credentials()
-            with BridgeClient(config.imap_host, config.imap_port, config.imap_security) as client:
-                client.login(config.username, config.password)
-                for pasta in config.folders:
-                    _sync_imap_pasta(store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event)
-        except Exception as exc:
-            on_event("erro", conta="proton", pasta="", msg=str(exc))
+        if only_conta in (None, "proton"):
+            try:
+                config.require_credentials()
+                with BridgeClient(config.imap_host, config.imap_port, config.imap_security) as client:
+                    client.login(config.username, config.password)
+                    for pasta in config.folders:
+                        _sync_imap_pasta(
+                            store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event,
+                            ai_max_dias=config.ai_max_dias,
+                        )
+            except Exception as exc:
+                logger.exception("sync completo do Proton (pasta 'proton') falhou")
+                on_event("erro", conta="proton", pasta="", msg=str(exc))
 
         accounts = [a for a in load_accounts(config.accounts_path) if a.provider == "gmail"]
         for account in accounts:
+            conta_id = f"gmail:{account.name}"
+            if only_conta is not None and conta_id != only_conta:
+                continue
+            if skip_contas and conta_id in skip_contas:
+                logger.info("pulando %s — credencial marcada como inválida.", conta_id)
+                on_event("erro", conta=conta_id, pasta="",
+                         msg="ignorada: token inválido — reautorize em Configurar Gmail")
+                continue
             for pasta in account.folders:
                 try:
                     _sync_gmail_pasta(
-                        config, store, engine, ollama, verify_config, ai_ready, account, pasta, limit, on_event
+                        config, store, engine, ollama, verify_config, ai_ready, account, pasta, limit, on_event,
+                        ai_max_dias=config.ai_max_dias,
                     )
                 except Exception as exc:
+                    logger.exception("sync completo de gmail:%s/%s falhou", account.name, pasta)
                     on_event("erro", conta=f"gmail:{account.name}", pasta=pasta, msg=str(exc))
+
+        imap_accounts = [a for a in load_accounts(config.accounts_path) if a.provider == "imap"]
+        for account in imap_accounts:
+            conta_id = f"imap:{account.name}"
+            if only_conta is not None and conta_id != only_conta:
+                continue
+            if skip_contas and conta_id in skip_contas:
+                logger.info("pulando %s — credencial marcada como inválida.", conta_id)
+                on_event("erro", conta=conta_id, pasta="", msg="ignorada: credencial inválida")
+                continue
+            from apolo import secrets
+
+            senha = secrets.lookup_account_password(conta_id)
+            if not (account.host and account.username and senha):
+                logger.warning("%s: credenciais incompletas — pulando.", conta_id)
+                on_event("erro", conta=conta_id, pasta="", msg="credenciais incompletas — configure via 'apolo accounts add'")
+                continue
+            try:
+                with BridgeClient(account.host, account.port, account.security) as client:
+                    client.login(account.username, senha)
+                    for pasta in account.folders:
+                        _sync_imap_pasta(
+                            store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event,
+                            ai_max_dias=config.ai_max_dias,
+                            conta=conta_id, pasta_db=f"{conta_id}:{pasta}",
+                        )
+            except Exception as exc:
+                logger.exception("sync completo de %s falhou", conta_id)
+                on_event("erro", conta=conta_id, pasta="", msg=str(exc))
 
     if ai_ready:
         ollama.unload()
@@ -89,32 +147,56 @@ def _classificar_novo(engine, remetente, assunto, list_unsubscribe):
     return decisao, novo_status
 
 
-def _sync_imap_pasta(store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event) -> None:
+def _sync_imap_pasta(
+    store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event, *,
+    ai_max_dias: int = 90, conta: str = "proton", pasta_db: str | None = None,
+) -> None:
+    """Sync completo de uma pasta IMAP. `conta`/`pasta_db` default pro caso do
+    Proton (sem namespace); contas IMAP adicionais passam `conta="imap:<nome>"`
+    e `pasta_db="imap:<nome>:<pasta>"` pra não colidir no banco (ver
+    `_sync_gmail_pasta`, mesma ideia)."""
+    pasta_db = pasta_db or pasta
     uids, uidvalidity = client.list_uids(pasta, limit)
-    novos_uids = [u for u in uids if not store.email_exists(pasta, uidvalidity, u)]
-    on_event("found", conta="proton", pasta=pasta, total=len(novos_uids))
+    novos_uids = [u for u in uids if not store.email_exists(pasta_db, uidvalidity, u)]
+    logger.info("[%s/%s] %d UID(s) novo(s) a buscar de %d candidato(s).", conta, pasta, len(novos_uids), len(uids))
+    on_event("found", conta=conta, pasta=pasta_db, total=len(novos_uids))
 
     residuo = []
+    falhas_seguidas = 0
     for uid in novos_uids:
-        m = client.fetch_header(uid)
+        try:
+            m = client.fetch_header(uid)
+        except Exception as e:
+            falhas_seguidas += 1
+            logger.warning("[%s/%s] falha ao buscar header do UID %d (%d seguida(s)): %s",
+                           conta, pasta, uid, falhas_seguidas, e)
+            if falhas_seguidas >= MAX_FALHAS_SEGUIDAS:
+                logger.warning("[%s/%s] parando cedo após falhas seguidas — retomando no próximo ciclo.", conta, pasta)
+                on_event("erro", conta=conta, pasta=pasta_db, msg=f"parou após falhas seguidas: {e}")
+                break
+            continue
+        falhas_seguidas = 0
         if m is None:
+            logger.debug("[%s/%s] UID %d sem resposta OK do FETCH — ignorado.", conta, pasta, uid)
             continue
         store.insert_email(
-            pasta=pasta, uidvalidity=uidvalidity, uid=m.uid,
+            conta=conta, pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
             message_id=m.message_id, remetente=m.remetente, assunto=m.assunto, data=m.data,
         )
         decisao, novo_status = _classificar_novo(engine, m.remetente, m.assunto, m.list_unsubscribe)
+        recente = eh_recente(m.data, ai_max_dias)
+        efetiva = acao_efetiva(decisao, ai_ready, recente)
         store.classify_email(
-            pasta=pasta, uidvalidity=uidvalidity, uid=m.uid,
+            pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
             status=novo_status, categoria=decisao.categoria,
-            acao_sugerida=decisao.acao_sugerida, regra_casada=decisao.regra_casada,
+            acao_sugerida=efetiva, regra_casada=decisao.regra_casada,
         )
         item = SyncItem(
-            conta="proton", pasta=pasta, uidvalidity=uidvalidity, uid=m.uid,
+            conta=conta, pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
             message_id=m.message_id,
             remetente=m.remetente, assunto=m.assunto, data=m.data,
-            status=decisao.acao_sugerida, categoria=decisao.categoria,
-            sera_analisado=(decisao.regra_casada == "default"),
+            status=efetiva, categoria=decisao.categoria,
+            sera_analisado=(decisao.regra_casada == "default" and ai_ready and recente),
         )
         on_event("item", item)
         if item.sera_analisado:
@@ -130,11 +212,12 @@ def _sync_imap_pasta(store, engine, ollama, verify_config, ai_ready, client, pas
                 decisao_ia = apply_ia_decision(
                     ollama, verify_config, assunto=m.assunto, remetente=m.remetente, trecho=trecho
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning("[%s/%s] IA falhou pro UID %d: %s", conta, pasta, m.uid, e)
                 decisao_ia = None
             if decisao_ia is not None:
                 store.classify_email(
-                    pasta=pasta, uidvalidity=uidvalidity, uid=m.uid,
+                    pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
                     status=STATUS_AGUARDANDO, categoria=decisao_ia.categoria,
                     acao_sugerida=decisao_ia.acao, regra_casada=f"ia:{decisao_ia.categoria}",
                 )
@@ -142,13 +225,15 @@ def _sync_imap_pasta(store, engine, ollama, verify_config, ai_ready, client, pas
                 item.categoria = decisao_ia.categoria
             on_event("classificado", item)
 
-    meta = store.get_folder_meta(pasta)
+    meta = store.get_folder_meta(pasta_db)
     prev_last_uid = meta[1] if meta else 0
     max_uid = max(uids, default=prev_last_uid)
-    store.set_folder_meta(pasta, uidvalidity, max(max_uid, prev_last_uid))
+    store.set_folder_meta(pasta_db, uidvalidity, max(max_uid, prev_last_uid))
 
 
-def _sync_gmail_pasta(config, store, engine, ollama, verify_config, ai_ready, account, pasta, limit, on_event) -> None:
+def _sync_gmail_pasta(
+    config, store, engine, ollama, verify_config, ai_ready, account, pasta, limit, on_event, *, ai_max_dias: int = 90
+) -> None:
     from apolo.fetch.gmail import GmailClient
 
     conta_id = f"gmail:{account.name}"
@@ -163,12 +248,27 @@ def _sync_gmail_pasta(config, store, engine, ollama, verify_config, ai_ready, ac
 
     gmail_ids, history_id = client.list_ids(pasta, limit)
     novos_ids = [gid for gid in gmail_ids if not store.email_exists(pasta_db, 1, client.uid_for(gid))]
+    logger.info("[%s/%s] %d UID(s) novo(s) a buscar de %d candidato(s).", conta_id, pasta, len(novos_ids), len(gmail_ids))
     on_event("found", conta=conta_id, pasta=pasta, total=len(novos_ids))
 
     residuo = []
+    falhas_seguidas = 0
     for gid in novos_ids:
-        m = client.fetch_header(gid)
+        try:
+            m = client.fetch_header(gid)
+        except Exception as e:
+            falhas_seguidas += 1
+            logger.warning("[%s/%s] falha ao buscar header de %s (%d seguida(s)): %s",
+                           conta_id, pasta, gid, falhas_seguidas, e)
+            if falhas_seguidas >= MAX_FALHAS_SEGUIDAS:
+                logger.warning("[%s/%s] parando cedo após falhas seguidas — retomando no próximo ciclo.",
+                               conta_id, pasta)
+                on_event("erro", conta=conta_id, pasta=pasta, msg=f"parou após falhas seguidas: {e}")
+                break
+            continue
+        falhas_seguidas = 0
         if m is None:
+            logger.debug("[%s/%s] %s sem resposta OK do FETCH — ignorado.", conta_id, pasta, gid)
             continue
         store.insert_email(
             conta=conta_id, pasta=pasta_db, uidvalidity=1, uid=m.uid,
@@ -176,17 +276,19 @@ def _sync_gmail_pasta(config, store, engine, ollama, verify_config, ai_ready, ac
             provider_id=m.provider_id,
         )
         decisao, novo_status = _classificar_novo(engine, m.remetente, m.assunto, m.list_unsubscribe)
+        recente = eh_recente(m.data, ai_max_dias)
+        efetiva = acao_efetiva(decisao, ai_ready, recente)
         store.classify_email(
             pasta=pasta_db, uidvalidity=1, uid=m.uid,
             status=novo_status, categoria=decisao.categoria,
-            acao_sugerida=decisao.acao_sugerida, regra_casada=decisao.regra_casada,
+            acao_sugerida=efetiva, regra_casada=decisao.regra_casada,
         )
         item = SyncItem(
             conta=conta_id, pasta=pasta_db, uidvalidity=1, uid=m.uid,
             message_id=m.message_id, provider_id=m.provider_id,
             remetente=m.remetente, assunto=m.assunto, data=m.data,
-            status=decisao.acao_sugerida, categoria=decisao.categoria,
-            sera_analisado=(decisao.regra_casada == "default"),
+            status=efetiva, categoria=decisao.categoria,
+            sera_analisado=(decisao.regra_casada == "default" and ai_ready and recente),
         )
         on_event("item", item)
         if item.sera_analisado:
@@ -201,7 +303,8 @@ def _sync_gmail_pasta(config, store, engine, ollama, verify_config, ai_ready, ac
                 decisao_ia = apply_ia_decision(
                     ollama, verify_config, assunto=m.assunto, remetente=m.remetente, trecho=trecho
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning("[%s/%s] IA falhou pro item %s: %s", conta_id, pasta, m.uid, e)
                 decisao_ia = None
             if decisao_ia is not None:
                 store.classify_email(

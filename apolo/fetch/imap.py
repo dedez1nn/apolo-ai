@@ -10,6 +10,7 @@ Princípios:
 
 import email
 import imaplib
+import logging
 import ssl
 import sys
 import time
@@ -17,6 +18,15 @@ from email.header import decode_header
 from email.message import Message
 
 from apolo.fetch import FetchedEmail, FolderResult  # noqa: F401
+
+logger = logging.getLogger("apolo.fetch.imap")
+
+# Falhas seguidas de fetch por UID antes de desistir do resto da pasta nesta
+# passada — sintoma de rate limit ou conexão morta no meio do lote. Parar aqui
+# em vez de estourar a exceção evita perder também os UIDs já buscados com
+# sucesso: o ponteiro (last_uid) só avança até o que deu certo, e o restante
+# é retomado automaticamente no próximo ciclo do timer.
+MAX_FALHAS_SEGUIDAS = 5
 
 
 def _decode_str(value: str | None) -> str:
@@ -34,7 +44,12 @@ def _decode_str(value: str | None) -> str:
 
 
 class BridgeClient:
-    """Conexão com o Proton Bridge. Use como context manager."""
+    """Conexão IMAP. Use como context manager.
+
+    Apesar do nome (nasceu só pro Proton Bridge), serve pra qualquer servidor
+    IMAP: `security="STARTTLS"` (Bridge, loopback) ou `security="SSL"` (TLS
+    direto, ex.: outlook.office365.com:993) — ver `_build_ssl_context`.
+    """
 
     def __init__(
         self,
@@ -57,6 +72,20 @@ class BridgeClient:
         self.connect_wait = connect_wait
         self._imap: imaplib.IMAP4 | None = None
 
+    def _is_loopback(self) -> bool:
+        return self.host in ("127.0.0.1", "localhost", "::1")
+
+    def _build_ssl_context(self) -> ssl.SSLContext:
+        """Verificação real por padrão. Só é desligada contra o Bridge local
+        (loopback): cert self-signed, sem CA pra validar e sem sentido fazê-lo
+        em 127.0.0.1. Contra um servidor de verdade (ex.: Outlook), o
+        certificado é validado normalmente."""
+        ctx = ssl.create_default_context()
+        if self._is_loopback():
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
     def _connect(self) -> imaplib.IMAP4:
         """Conecta na porta IMAP, reentando enquanto o Bridge ainda não subiu.
 
@@ -67,18 +96,35 @@ class BridgeClient:
         deadline = time.monotonic() + self.connect_wait
         delay = 1.0
         avisou = False
+        tentativas = 0
         while True:
+            tentativas += 1
             try:
-                return imaplib.IMAP4(self.host, self.port, timeout=self.timeout)
+                if self.security == "SSL":
+                    # TLS direto (ex.: porta 993 do Outlook) — sem STARTTLS
+                    # pós-conexão, a sessão já nasce cifrada.
+                    imap = imaplib.IMAP4_SSL(
+                        self.host, self.port, timeout=self.timeout, ssl_context=self._build_ssl_context()
+                    )
+                else:
+                    imap = imaplib.IMAP4(self.host, self.port, timeout=self.timeout)
+                if tentativas > 1:
+                    logger.info("Bridge conectou em %s:%s após %d tentativa(s).", self.host, self.port, tentativas)
+                return imap
             except (ConnectionRefusedError, TimeoutError, OSError) as e:
                 if time.monotonic() >= deadline:
+                    logger.error(
+                        "servidor IMAP não respondeu em %s:%s após %.0fs (%d tentativa(s)): %s",
+                        self.host, self.port, self.connect_wait, tentativas, e,
+                    )
                     raise ConnectionRefusedError(
-                        f"Proton Bridge não respondeu em {self.host}:{self.port} "
-                        f"após {self.connect_wait:.0f}s — ele está rodando?"
+                        f"servidor IMAP não respondeu em {self.host}:{self.port} "
+                        f"após {self.connect_wait:.0f}s"
                     ) from e
+                logger.debug("tentativa %d de conexão ao servidor IMAP falhou: %s", tentativas, e)
                 if not avisou:
                     print(
-                        f"aguardando o Proton Bridge em {self.host}:{self.port}…",
+                        f"aguardando o servidor IMAP em {self.host}:{self.port}…",
                         file=sys.stderr,
                     )
                     avisou = True
@@ -88,12 +134,7 @@ class BridgeClient:
     def __enter__(self) -> "BridgeClient":
         self._imap = self._connect()
         if self.security == "STARTTLS":
-            # O Bridge usa um cert self-signed em loopback; não dá pra verificar
-            # contra uma CA e não faz sentido em 127.0.0.1. Conexão local.
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            self._imap.starttls(ssl_context=ctx)
+            self._imap.starttls(ssl_context=self._build_ssl_context())
         return self
 
     def __exit__(self, *exc) -> None:
@@ -106,24 +147,64 @@ class BridgeClient:
 
     def login(self, username: str, password: str) -> None:
         assert self._imap is not None
-        self._imap.login(username, password)
+        try:
+            self._imap.login(username, password)
+        except Exception:
+            logger.exception("login IMAP falhou para %r", username)
+            raise
+        logger.info("login IMAP ok (%s).", username)
 
-    def copy_to(self, pasta: str, uid: int, destino: str) -> None:
-        """Seleciona a pasta (rw) e copia o UID pra `destino`, marcando \\Deleted.
+    def copy_to_bulk(self, pasta: str, uids: list[int], destino: str, *, chunk_size: int = 300) -> list[int]:
+        """Copia vários UIDs de uma vez pra `destino`, marcando \\Deleted.
 
-        O Bridge não anuncia MOVE, então a remoção é COPY + \\Deleted; o EXPUNGE
-        fica pra expunge() (uma vez por pasta). Mover pra Trash é reversível.
+        Um único SELECT pra pasta inteira, depois 1 COPY + 1 STORE por chunk
+        (sequence-set tipo "12,34,56") em vez de 3 comandos por email — pra
+        500 UIDs isso é ~4 comandos em vez de 1500. `chunk_size` evita mandar
+        uma linha de comando gigante de uma vez só.
+
+        `UID COPY`/`STORE` com sequence-set é tudo-ou-nada: se um UID do chunk
+        já não existir (obsoleto, movido por fora), o chunk inteiro falha. Por
+        isso, um chunk que falhar é tentado de novo item a item, pra não perder
+        o lote todo por causa de um UID só. Devolve os UIDs que efetivamente
+        deram certo (copiados + marcados \\Deleted).
         """
         assert self._imap is not None
+        if not uids:
+            return []
         typ, _ = self._imap.select(pasta, readonly=False)
         if typ != "OK":
             raise RuntimeError(f"não consegui selecionar {pasta!r} pra escrita")
-        typ, _ = self._imap.uid("COPY", str(uid), destino)
+
+        ok: list[int] = []
+        for i in range(0, len(uids), chunk_size):
+            chunk = uids[i : i + chunk_size]
+            try:
+                self._copy_store(chunk, destino)
+                ok.extend(chunk)
+            except Exception as e:
+                logger.warning(
+                    "lote de %d UID(s) falhou em %s (%s) — tentando item a item.",
+                    len(chunk), pasta, e,
+                )
+                for uid in chunk:
+                    try:
+                        self._copy_store([uid], destino)
+                        ok.append(uid)
+                    except Exception as e2:
+                        logger.warning("pulei %s UID %d (lixeira): %s", pasta, uid, e2)
+        return ok
+
+    def _copy_store(self, uids: list[int], destino: str) -> None:
+        """COPY + STORE \\Deleted pra um sequence-set de UIDs (a pasta já deve
+        estar selecionada em rw). Levanta se qualquer um dos dois falhar."""
+        assert self._imap is not None
+        seq = ",".join(str(u) for u in uids)
+        typ, _ = self._imap.uid("COPY", seq, destino)
         if typ != "OK":
-            raise RuntimeError(f"COPY do UID {uid} pra {destino!r} falhou")
-        typ, _ = self._imap.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
+            raise RuntimeError(f"COPY do(s) UID(s) {seq} pra {destino!r} falhou")
+        typ, _ = self._imap.uid("STORE", seq, "+FLAGS", "(\\Deleted)")
         if typ != "OK":
-            raise RuntimeError(f"STORE \\Deleted no UID {uid} falhou")
+            raise RuntimeError(f"STORE \\Deleted no(s) UID(s) {seq} falhou")
 
     def expunge(self, pasta: str) -> None:
         """EXPUNGE na pasta — efetiva a remoção dos marcados \\Deleted."""
@@ -169,11 +250,21 @@ class BridgeClient:
         raw_ids = data[0].split() if data and data[0] else []
         candidate_uids = sorted(int(x) for x in raw_ids)
         new_uids = [u for u in candidate_uids if u > search_from]
+        logger.info("[%s] %d UID(s) novo(s) a buscar (search_from=%d, resynced=%s).",
+                    pasta, len(new_uids), search_from, resynced)
 
-        novos = [self._fetch_headers(uid) for uid in new_uids]
-        novos = [m for m in novos if m is not None]
+        novos, falhou_cedo = self._fetch_headers_batch(pasta, new_uids)
 
+        # Se parou cedo (falhas seguidas), ultimo_uid só reflete o que foi
+        # buscado com sucesso ANTES da sequência de falhas — os UIDs
+        # restantes (inclusive os que falharam) ficam pra tentar de novo no
+        # próximo ciclo, em vez de serem dados como vistos.
         max_uid = max((m.uid for m in novos), default=search_from)
+        if falhou_cedo:
+            logger.warning(
+                "[%s] parando cedo após falhas seguidas — retomando destes UIDs no próximo ciclo.",
+                pasta,
+            )
         return FolderResult(
             pasta=pasta,
             uidvalidity=uidvalidity,
@@ -181,6 +272,34 @@ class BridgeClient:
             novos=novos,
             ultimo_uid=max_uid,
         )
+
+    def _fetch_headers_batch(self, pasta: str, uids: list[int]) -> tuple[list[FetchedEmail], bool]:
+        """Busca o header de cada UID, tolerando falhas pontuais.
+
+        Uma exceção no meio do lote (ex.: rate limit do Bridge/API por trás
+        dele) não pode derrubar os headers já buscados com sucesso — por
+        isso cada UID é isolado num try/except. Se as falhas se repetirem
+        (`MAX_FALHAS_SEGUIDAS` seguidas), a conexão provavelmente está morta
+        ou sendo limitada; paramos ali e devolvemos só o que já deu certo.
+        """
+        novos: list[FetchedEmail] = []
+        falhas_seguidas = 0
+        for uid in uids:
+            try:
+                m = self._fetch_headers(uid)
+            except Exception as e:
+                falhas_seguidas += 1
+                logger.warning("[%s] falha ao buscar header do UID %d (%d seguida(s)): %s",
+                               pasta, uid, falhas_seguidas, e)
+                if falhas_seguidas >= MAX_FALHAS_SEGUIDAS:
+                    return novos, True
+                continue
+            falhas_seguidas = 0
+            if m is None:
+                logger.debug("[%s] UID %d sem resposta OK do FETCH — ignorado.", pasta, uid)
+                continue
+            novos.append(m)
+        return novos, False
 
     def list_uids(self, pasta: str, limit: int) -> tuple[list[int], int]:
         """Lista até `limit` UIDs mais recentes da pasta (uma única busca IMAP)
@@ -201,6 +320,8 @@ class BridgeClient:
         raw_ids = data[0].split() if data and data[0] else []
         all_uids = sorted(int(x) for x in raw_ids)
         uids = all_uids[-limit:] if limit > 0 else all_uids
+        logger.info("[%s] sync completo: %d UID(s) na pasta, %d considerado(s) (limit=%d).",
+                    pasta, len(all_uids), len(uids), limit)
         return uids, uidvalidity
 
     def fetch_header(self, uid: int) -> FetchedEmail | None:
@@ -245,6 +366,7 @@ class BridgeClient:
         assert self._imap is not None
         typ, data = self._imap.uid("fetch", str(uid), "(BODY.PEEK[])")
         if typ != "OK" or not data or not isinstance(data[0], tuple):
+            logger.warning("FETCH do corpo do UID %d falhou (typ=%s).", uid, typ)
             return None
         return email.message_from_bytes(data[0][1])
 
@@ -257,6 +379,7 @@ class BridgeClient:
             "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID LIST-UNSUBSCRIBE)])",
         )
         if typ != "OK" or not data or not isinstance(data[0], tuple):
+            logger.warning("FETCH do header do UID %d falhou (typ=%s).", uid, typ)
             return None
 
         raw_headers = data[0][1]

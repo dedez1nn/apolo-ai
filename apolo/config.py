@@ -56,13 +56,26 @@ def _default_tokens_dir() -> Path:
 
 @dataclass(frozen=True)
 class AccountConfig:
-    """Uma conta externa (Gmail, futuramente Outlook)."""
+    """Uma conta externa (Gmail via API, ou IMAP genérico — ex.: Outlook)."""
 
     name: str                          # identificador livre: "pessoal", "work"…
-    provider: str                      # "gmail"
-    client_id: str
-    client_secret: str
+    provider: str                      # "gmail" ou "imap"
+    client_id: str = ""                # OAuth2 (provider == "gmail")
+    client_secret: str = ""            # OAuth2 (provider == "gmail")
     folders: tuple[str, ...] = ("INBOX",)
+    # IMAP genérico (provider == "imap"): a senha NÃO fica aqui — vive no
+    # keyring sob a chave "imap:{name}" (ver apolo.secrets store/lookup_
+    # account_password), no mesmo espírito da senha do Bridge.
+    host: str = ""
+    port: int = 993
+    security: str = "SSL"              # "SSL" (porta 993, direto) ou "STARTTLS"
+    username: str = ""
+    trash_folder: str = "Trash"
+    # Tamanho do lote de COPY/STORE no despacho de lixeira (ver BridgeClient.
+    # copy_to_bulk). Bem menor que os 300 usados pro Bridge local: servidores
+    # remotos (ex.: Outlook) têm throttling não documentado e lotes grandes
+    # têm mais chance de sofrer timeout/desconexão no meio do caminho.
+    chunk_size: int = 50
 
 
 def load_accounts(accounts_path: Path | None = None) -> list[AccountConfig]:
@@ -83,6 +96,12 @@ def load_accounts(accounts_path: Path | None = None) -> list[AccountConfig]:
                 client_id=entry.get("client_id", ""),
                 client_secret=entry.get("client_secret", ""),
                 folders=tuple(entry.get("folders", ["INBOX"])),
+                host=entry.get("host", ""),
+                port=int(entry.get("port", 993)),
+                security=entry.get("security", "SSL"),
+                username=entry.get("username", ""),
+                trash_folder=entry.get("trash_folder", "Trash"),
+                chunk_size=int(entry.get("chunk_size", 50)),
             ))
         except KeyError:
             pass
@@ -108,6 +127,10 @@ class Config:
     sync_limit: int = 500
     # IA (Ollama) — classifica só o resíduo que as regras não resolveram.
     ai_enabled: bool = True
+    # Resíduo mais velho que isso não é mandado pra IA por padrão (fica
+    # 'pendente'); só analisa se pedido explícito (Hub > "Reclassificar
+    # pendentes (IA)" ou `apolo retry-ia`, que não filtram por idade).
+    ai_max_dias: int = 90
     ollama_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "llama3.2"
     ollama_keep_alive: str = "30m"
@@ -169,6 +192,7 @@ class Config:
             trash_folder=get("APOLO_TRASH_FOLDER", "Trash"),
             sync_limit=int(get("APOLO_SYNC_LIMIT", "500")),
             ai_enabled=get("APOLO_AI_ENABLED", "true").lower() in ("1", "true", "yes", "sim"),
+            ai_max_dias=int(get("APOLO_AI_MAX_DIAS", "90")),
             ollama_url=get("APOLO_OLLAMA_URL") or get("OLLAMA_HOST") or "http://127.0.0.1:11434",
             ollama_model=get("APOLO_OLLAMA_MODEL", "llama3.2"),
             ollama_keep_alive=get("APOLO_OLLAMA_KEEP_ALIVE", "30m"),

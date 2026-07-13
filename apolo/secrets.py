@@ -88,3 +88,65 @@ def clear_password() -> bool:
         return p.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _account_attrs(account_id: str) -> tuple[str, ...]:
+    """Atributos do segredo de uma conta IMAP genérica (ex.: "imap:outlook").
+
+    Chave separada da senha fixa do Bridge (`_ATTRS` acima): contas distintas
+    não podem colidir, e o Bridge continua com seu próprio segredo de sempre.
+    """
+    return ("service", "apolo", "key", "imap-account-password", "account", account_id)
+
+
+def store_account_password(account_id: str, value: str) -> bool:
+    """Grava a senha (ou senha de app) de uma conta IMAP genérica no keyring."""
+    if not disponivel() or not value:
+        return False
+    try:
+        p = subprocess.run(
+            ["secret-tool", "store", "--label", f"Apolo — senha de {account_id}", *_account_attrs(account_id)],
+            input=value,
+            text=True,
+            capture_output=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def lookup_account_password(account_id: str) -> str | None:
+    """Lê a senha de uma conta IMAP genérica; None se ausente/keyring fora."""
+    if not disponivel():
+        return None
+    try:
+        p = subprocess.run(
+            ["secret-tool", "lookup", *_account_attrs(account_id)],
+            text=True,
+            capture_output=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    return p.stdout or None
+
+
+def clear_account_password(account_id: str) -> bool:
+    """Remove a senha de uma conta IMAP genérica do keyring."""
+    if not disponivel():
+        return False
+    try:
+        p = subprocess.run(
+            ["secret-tool", "clear", *_account_attrs(account_id)],
+            capture_output=True,
+            timeout=_TIMEOUT,
+            check=False,
+        )
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
