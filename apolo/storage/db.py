@@ -12,6 +12,7 @@ As regras NÃO vivem aqui — ficam num TOML editável à mão (passo 2).
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 # Estados válidos do ciclo de vida (apolo.md):
@@ -90,6 +91,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def _now() -> str:
     """ISO 8601 em UTC — ordenável e sem ambiguidade de fuso."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+_DATA_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _data_ordenavel(raw: str | None) -> datetime:
+    """Header Date (RFC 2822) -> datetime comparável. Não dá pra ordenar por
+    string (meses por nome), nem confiar em UID como proxy de data — UID é
+    ordem de descoberta, não a data que o remetente colocou no header (varia
+    com resync, full-scan, atraso de entrega etc). Sem header ou ilegível,
+    cai pro mínimo (fica no fim da lista "mais recentes primeiro").
+    """
+    if not raw:
+        return _DATA_MIN
+    try:
+        dt = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, IndexError):
+        return _DATA_MIN
+    if dt is None:
+        return _DATA_MIN
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 class Storage:
@@ -304,17 +328,20 @@ class Storage:
 
     # ----- fila de revisão (TUI) -----
     def fetch_queue(self) -> list[sqlite3.Row]:
-        """Emails aguardando revisão, mais recentes primeiro."""
-        return self.conn.execute(
+        """Emails aguardando revisão, mais recentes primeiro pela data real do
+        header (não por UID/conta/pasta — UID não é proxy confiável de data,
+        e ordenar por conta antes misturava mal contas diferentes na fila).
+        """
+        rows = self.conn.execute(
             """
             SELECT conta, pasta, uidvalidity, uid, message_id, remetente, assunto,
                    data, categoria, acao_sugerida, regra_casada, provider_id
               FROM emails
              WHERE status = ?
-             ORDER BY conta, pasta, uid DESC
             """,
             (STATUS_AGUARDANDO,),
         ).fetchall()
+        return sorted(rows, key=lambda r: _data_ordenavel(r["data"]), reverse=True)
 
     def count_queue(self) -> int:
         row = self.conn.execute(
