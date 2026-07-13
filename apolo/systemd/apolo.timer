@@ -1,13 +1,19 @@
 # Template renderizado por `python -m apolo.cli setup`.
-# A chave {{interval}} vem de --interval (padrão 15min).
+# A chave {{interval}} vem de --interval (padrão 15min); fica também guardada
+# no comentário "# Interval=" abaixo, só pra `intervalo_atual()` conseguir ler
+# de volta o valor original (OnCalendar não é reversível pra "15min" à mão).
 [Unit]
 Description=Apolo — dispara a triagem de emails periodicamente
 
 [Timer]
-# Primeira passada pouco depois do login, depois a cada intervalo.
-OnBootSec=2min
-OnUnitActiveSec={interval}
-# Persistent: se a máquina estava desligada na hora prevista, roda ao voltar.
+# Interval={interval}
+# OnCalendar (relógio de parede) em vez de OnBootSec/OnUnitActiveSec
+# (monotônico): em alguns ambientes o cálculo do próximo disparo monotônico
+# emperra em "infinity" e o timer, mesmo ativo, nunca mais dispara sozinho
+# (visto na prática — CachyOS, systemd 261). OnCalendar não tem esse
+# problema, e Persistent=true funciona de verdade com ele: se a máquina
+# estava desligada na hora prevista, roda assim que voltar.
+OnCalendar={on_calendar}
 Persistent=true
 
 [Install]
