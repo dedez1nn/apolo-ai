@@ -11,9 +11,6 @@ import contextlib
 import io
 from datetime import datetime
 
-def _mesc(s: str) -> str:
-    return s.replace("[", "\\[").replace("]", "\\]")
-
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -21,7 +18,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Label, ListItem, ListView, Static
 
-from apolo.ui.model import ACAO_COR, ACAO_ICONE, Item, fmt_run
+from apolo.ui.model import ACAO_COR, ACAO_ICONE, Item, fmt_remetente, fmt_run
 from apolo.ui.theme import (
     AZURE_BRT,
     COR_LIXEIRA,
@@ -32,11 +29,13 @@ from apolo.ui.theme import (
     INK_DIM,
     INK_FAINT,
     keybar,
+    mesc,
 )
 
 # (id, glyph, rótulo) — ordem do menu.
 _MENU = [
     ("review",  "✉", "Revisar fila"),
+    ("swipe",   "♥", "Revisar no modo swipe (joguinho)"),
     ("add_rule", "+", "Adicionar regra"),
     ("preview", "◎", "Prévia — o que as regras pegariam"),
     ("sugestoes", "✦", "Sugestões (baseado no seu histórico)"),
@@ -44,6 +43,7 @@ _MENU = [
     ("run",     "▶", "Rodar agora (uma passada)"),
     ("retry_ia", "↻", "Reclassificar pendentes (IA)"),
     ("gmail",   "G", "Configurar Gmail"),
+    ("imap",    "O", "Configurar Outlook/IMAP"),
     ("config",  "⚙", "Configurações"),
     ("status",  "▦", "Status & contadores"),
 ]
@@ -69,6 +69,7 @@ class HubScreen(Screen):
         Binding("enter", "abrir", "abrir", show=True),
         Binding("up,k", "cursor_up", "cima", show=False),
         Binding("down,j", "cursor_down", "baixo", show=False),
+        Binding("i", "toggle_ia", "IA liga/desliga", show=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -81,7 +82,7 @@ class HubScreen(Screen):
                 with VerticalScroll(id="hub-detail"):
                     yield Static(id="hub-detail-body", markup=True)
         yield Static(
-            keybar([("↑↓", "Navegar"), ("↵", "Abrir"), ("Q", "Sair")]),
+            keybar([("↑↓", "Navegar"), ("↵", "Abrir"), ("I", "IA on/off"), ("Q", "Sair")]),
             classes="keybar",
         )
 
@@ -94,7 +95,16 @@ class HubScreen(Screen):
     def _itens(self) -> list[MenuItem]:
         n_fila = len(self.app.queue)
         n_regras = self.app.stats.rules_count
-        badges = {"review": str(n_fila) if n_fila else "", "rules": str(n_regras) if n_regras else ""}
+        cfg = self.app.config
+        ia_badge = ""
+        if cfg is not None:
+            ia_badge = f"[{COR_MANTER}]IA[/]" if cfg.ai_enabled else f"[{INK_FAINT}]IA off[/]"
+        badges = {
+            "review": str(n_fila) if n_fila else "",
+            "swipe": str(n_fila) if n_fila else "",
+            "rules": str(n_regras) if n_regras else "",
+            "config": ia_badge,
+        }
         return [MenuItem(key, icone, rotulo, badges.get(key, "")) for key, icone, rotulo in _MENU]
 
     # ----- masthead -----
@@ -112,7 +122,12 @@ class HubScreen(Screen):
         ultima = fmt_run(self.app.stats.last_run)
         agora = datetime.now().strftime("%H:%M")
         sep = f"   [{INK_FAINT}]·[/]   "
-        return sep.join([fila, f"[{INK_DIM}]última {ultima}[/]", f"[{AZURE_BRT}]{agora}[/]"])
+        partes = [fila, f"[{INK_DIM}]última {ultima}[/]", f"[{AZURE_BRT}]{agora}[/]"]
+        invalidas = getattr(self.app, "contas_invalidas", {})
+        if invalidas:
+            nomes = ", ".join(sorted(c.removeprefix("gmail:") for c in invalidas))
+            partes.append(f"[{COR_LIXEIRA} b]⚠ reautorizar: {mesc(nomes)}[/]")
+        return sep.join(partes)
 
     def _tick_relogio(self) -> None:
         self.query_one("#mast-stats", Static).update(self._stats())
@@ -136,8 +151,8 @@ class HubScreen(Screen):
         linhas = []
         for it in itens[:limite]:
             cor = ACAO_COR.get(it.acao, AZURE_BRT)
-            rem = _mesc((it.remetente or "(sem remetente)")[:40])
-            assunto = _mesc((it.assunto or "")[:46])
+            rem = mesc(fmt_remetente(it.remetente)[:40])
+            assunto = mesc((it.assunto or "")[:46])
             linhas.append(f"[{cor}]{GUTTER}[/] {rem}")
             if assunto:
                 linhas.append(f"  [{INK_FAINT}]{assunto}[/]")
@@ -158,6 +173,22 @@ class HubScreen(Screen):
             )
         rodape = f"\n[{INK_DIM}]{len(fila)} email(s) aguardando · Enter para revisar · S sincroniza (ao vivo)[/]"
         return cab + "\n".join(self._linhas_emails(fila)) + rodape
+
+    def _det_swipe(self) -> str:
+        fila = self.app.queue
+        cab = self._titulo_det("Modo swipe")
+        if not fila:
+            return (
+                cab
+                + f"\n[{INK_DIM}]Fila vazia — nada para revisar agora.[/]"
+            )
+        rodape = (
+            f"\n[{INK_DIM}]{len(fila)} email(s) aguardando · Enter para começar[/]\n\n"
+            f"[{INK_FAINT}]↑ manter · ↓ lixeira · ← bloquear · → permitir\n"
+            f"cada seta mostra o carimbo e desliza pra fora — igual\n"
+            f"D/M/B/A da listagem normal, só que em forma de jogo.[/]"
+        )
+        return cab + rodape
 
     def _det_add_rule(self) -> str:
         n = self.app.stats.rules_count
@@ -265,6 +296,32 @@ class HubScreen(Screen):
         linhas.append(f"\n[{INK_DIM}]Enter para autorizar uma nova conta.[/]")
         return cab + "\n".join(linhas)
 
+    def _det_imap(self) -> str:
+        cab = self._titulo_det("Configurar Outlook/IMAP")
+        cfg = self.app.config
+        if cfg is None:
+            return cab + f"\n[{INK_DIM}]Configuração não carregada.[/]"
+        from apolo.config import load_accounts
+
+        contas = [a for a in load_accounts(cfg.accounts_path) if a.provider == "imap"]
+        linhas = [f"[{INK_DIM}]Contas IMAP genéricas (senha/senha de app — não OAuth).[/]\n"]
+        if contas:
+            from apolo import secrets
+
+            linhas.append(f"[{INK_DIM}]Contas configuradas:[/]")
+            for c in contas:
+                tem_senha = secrets.lookup_account_password(f"imap:{c.name}") is not None
+                estado = (
+                    f"[{COR_MANTER}]✓ {c.host}:{c.port} ({c.security})[/]"
+                    if tem_senha
+                    else f"[{COR_LIXEIRA}]sem senha no keyring[/]"
+                )
+                linhas.append(f"  {GUTTER} {c.name}  {estado}")
+        else:
+            linhas.append(f"[{INK_DIM}]Nenhuma conta adicionada ainda.[/]")
+        linhas.append(f"\n[{INK_DIM}]Enter para adicionar/editar uma conta.[/]")
+        return cab + "\n".join(linhas)
+
     def _det_config(self) -> str:
         cab = self._titulo_det("Configurações")
         cfg = self.app.config
@@ -272,7 +329,7 @@ class HubScreen(Screen):
             return cab + f"\n[{INK_DIM}]Ajustes de agendamento, IA, newsletters e credenciais.[/]"
         ia = f"[{COR_MANTER}]ligada[/]" if cfg.ai_enabled else f"[{INK_FAINT}]desligada[/]"
         return cab + (
-            f"\n[{INK_DIM}]IA / classificação:[/] {ia}\n"
+            f"\n[{INK_DIM}]IA / classificação:[/] {ia}   [{INK_FAINT}](I liga/desliga na hora)[/]\n"
             f"[{INK_DIM}]Modelo:[/] {cfg.ollama_model}\n"
             f"[{INK_DIM}]Pastas:[/] {', '.join(cfg.folders)}\n\n"
             f"[{INK_DIM}]Enter para agendamento, IA, newsletters e senha do Bridge.[/]"
@@ -351,6 +408,31 @@ class HubScreen(Screen):
     def action_sair(self) -> None:
         self.app.exit()
 
+    def action_toggle_ia(self) -> None:
+        """Liga/desliga o Ollama na hora, sem passar pela tela de Configurações.
+
+        Grava direto no .env (mesmo destino do switch de lá) e recarrega o
+        Config em memória — vale já na próxima sincronização/rodada desta
+        sessão. Desligada, o resíduo que a cascata não resolveu fica em
+        'revisar' pra filtragem manual — nada é enviado ao Ollama.
+        """
+        if not self.app.config:
+            self.notify("Configuração não carregada.", severity="error")
+            return
+        from apolo.config import Config
+        from apolo.config_writer import env_path, set_env_values
+
+        novo_estado = not self.app.config.ai_enabled
+        try:
+            set_env_values(env_path(), {"APOLO_AI_ENABLED": "true" if novo_estado else "false"})
+        except Exception as exc:
+            self.notify(f"erro ao salvar: {exc}", severity="error")
+            return
+        self.app.config = Config.load()
+        self._atualizar()
+        estado_txt = "ligada" if novo_estado else "desligada — resíduo fica para revisão manual"
+        self.notify(f"IA (Ollama) {estado_txt}.", severity="information")
+
     def _rotear(self, key: str) -> None:
         if key == "review":
             self._recarregar_fila()
@@ -359,6 +441,11 @@ class HubScreen(Screen):
             # Entra mesmo com a fila vazia: é lá dentro que se sincroniza (S)
             # sem travar a tela — a fila pode deixar de estar vazia ao vivo.
             self.app.push_screen(QueueScreen(), self._apos_listagem)
+        elif key == "swipe":
+            self._recarregar_fila()
+            from apolo.ui.swipe_screen import SwipeScreen
+
+            self.app.push_screen(SwipeScreen(), self._apos_listagem)
         elif key == "add_rule":
             from apolo.ui.rules_screen import AddRuleModal
 
@@ -423,6 +510,10 @@ class HubScreen(Screen):
             from apolo.ui.gmail_setup import GmailSetupModal
 
             self.app.push_screen(GmailSetupModal(), lambda _=None: None)
+        elif key == "imap":
+            from apolo.ui.imap_setup import ImapSetupModal
+
+            self.app.push_screen(ImapSetupModal(), lambda _=None: None)
         elif key == "status":
             from apolo.ui.status import StatusScreen
 
