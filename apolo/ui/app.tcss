@@ -152,11 +152,18 @@ Screen {
 .email-row.v-revisar { border-left: tall $revisar; }
 
 .email-row.-highlight {
-    background: $primary 18%;
+    background: $accent 55%;
 }
 
 .er-sub {
     color: $text-muted;
+}
+
+/* ======================= MODO SWIPE ======================= */
+#sw-stage {
+    height: 1fr;
+    width: 100%;
+    align: center middle;
 }
 
 /* ======================= REGRAS ======================= */
@@ -179,7 +186,7 @@ Screen {
 .rule-row.v-block { border-left: tall $lixeira; }
 
 .rule-row.-highlight {
-    background: $primary 18%;
+    background: $accent 55%;
 }
 
 /* ======================= PRÉVIA ======================= */
@@ -273,11 +280,11 @@ Screen {
 }
 
 /* ======================= MODAIS ======================= */
-AddRuleModal, EditRuleModal, RunModal, CodeModal, DispatchModal, GmailSetupModal {
+AddRuleModal, EditRuleModal, RunModal, CodeModal, DispatchModal, GmailSetupModal, ImapSetupModal, EmailPreviewModal {
     align: center middle;
 }
 
-#gmail-box {
+#gmail-box, #imap-box {
     width: 72;
     max-width: 95%;
     height: auto;
@@ -376,4 +383,76 @@ AddRuleModal, EditRuleModal, RunModal, CodeModal, DispatchModal, GmailSetupModal
 
 #code-list > ListItem.-highlight {
     background: $primary 22%;
+}
+
+#mail-box {
+    width: 124;
+    max-width: 96%;
+    height: 90%;
+    max-height: 96%;
+    border: round $accent;
+    background: $panel;
+}
+
+#mail-head {
+    height: auto;
+    padding: 1 2;
+    border-bottom: tall $edge;
+}
+
+#mail-status {
+    height: auto;
+    min-height: 1;
+    padding: 0 2;
+    color: $text-muted;
+}
+
+#mail-scroll {
+    height: 1fr;
+    width: 100%;
+    padding: 1 2;
+}
+
+#mail-page {
+    width: 100%;
+    height: auto;
+    background: $surface;
+    border: round $primary 20%;
+    padding: 1 2;
+}
+
+.mail-block {
+    width: 100%;
+    height: auto;
+    padding: 0 0 1 0;
+}
+
+.mail-h1, .mail-h2, .mail-h3, .mail-h4, .mail-h5, .mail-h6 {
+    padding: 1 0 0 0;
+}
+
+.mail-pre, .mail-table {
+    background: $background 35%;
+    border-left: tall $edge;
+    padding: 1 1 1 2;
+}
+
+.mail-img-wrap {
+    width: 100%;
+    height: auto;
+    align: center middle;
+    padding: 1 0 0 0;
+}
+
+.mail-img {
+    width: auto;
+    height: auto;
+}
+
+.mail-img-caption {
+    width: 100%;
+    height: auto;
+    padding: 0 0 1 0;
+    color: $text-muted;
+    content-align: center top;
 }

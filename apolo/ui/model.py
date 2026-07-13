@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
-from email.utils import parsedate_to_datetime
+from email.utils import parseaddr, parsedate_to_datetime
 
-from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR
-from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, COR_REVISAR
+from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_PENDENTE, ACAO_REVISAR
+from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, COR_REVISAR, INK_FAINT
 
 # Glyph + rótulo + cor (hex do tema) por ação. Glyphs Unicode comuns — sem
-# dependência de nerd font: ● lixeira, ✓ manter, ◆ revisar.
-ACAO_ICONE = {ACAO_LIXEIRA: "●", ACAO_MANTER: "✓", ACAO_REVISAR: "◆"}
-ACAO_ROTULO = {ACAO_LIXEIRA: "lixeira", ACAO_MANTER: "manter", ACAO_REVISAR: "revisar"}
-ACAO_COR = {ACAO_LIXEIRA: COR_LIXEIRA, ACAO_MANTER: COR_MANTER, ACAO_REVISAR: COR_REVISAR}
+# dependência de nerd font: ● lixeira, ✓ manter, ◆ revisar, ○ pendente (a
+# cascata não decidiu e a IA está desligada — ninguém analisou ainda).
+ACAO_ICONE = {ACAO_LIXEIRA: "●", ACAO_MANTER: "✓", ACAO_REVISAR: "◆", ACAO_PENDENTE: "○"}
+ACAO_ROTULO = {
+    ACAO_LIXEIRA: "lixeira", ACAO_MANTER: "manter", ACAO_REVISAR: "revisar",
+    ACAO_PENDENTE: "pendente",
+}
+ACAO_COR = {
+    ACAO_LIXEIRA: COR_LIXEIRA, ACAO_MANTER: COR_MANTER, ACAO_REVISAR: COR_REVISAR,
+    ACAO_PENDENTE: INK_FAINT,
+}
 
 
 def fmt_data(raw: str) -> str:
@@ -23,6 +30,22 @@ def fmt_data(raw: str) -> str:
     except (TypeError, ValueError, IndexError):
         return raw[:16]
     return dt.strftime("%d/%m %H:%M") if dt else raw[:16]
+
+
+def fmt_remetente(raw: str) -> str:
+    """Header From cru -> 'dominio.com.br - "Nome Nome"' (domínio primeiro, nome depois)."""
+    if not raw:
+        return "(sem remetente)"
+    nome, addr = parseaddr(raw)
+    nome = nome.strip()
+    dominio = addr.rsplit("@", 1)[-1].lower() if "@" in addr else ""
+    if dominio and nome:
+        return f'{dominio} - "{nome}"'
+    if dominio:
+        return dominio
+    if nome:
+        return f'"{nome}"'
+    return raw.strip()
 
 
 def fmt_run(iso: str | None) -> str:

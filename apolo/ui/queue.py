@@ -27,15 +27,17 @@ from textual.widgets import Label, ListItem, ListView, Static
 from apolo.actions import DispatchItem
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR, parse_sender
 from apolo.rules.writer import add_rule_entry, remove_rule_entry
-from apolo.ui.model import ACAO_COR, ACAO_ICONE, ACAO_ROTULO, Item, fmt_data
+from apolo.ui.model import ACAO_COR, ACAO_ICONE, ACAO_ROTULO, Item, fmt_data, fmt_remetente
 from apolo.ui.theme import (
     AMBER,
     AZURE_BRT,
     COR_LIXEIRA,
     COR_MANTER,
+    INK,
     INK_DIM,
     INK_FAINT,
     keybar,
+    mesc,
 )
 
 # Status "analisando" (sincronização ao vivo) somado às ações normais — usado
@@ -61,22 +63,33 @@ class EmailRow(ListItem):
     def _linha1(self) -> str:
         it = self.item
         status = "analisando" if it.analisando else it.acao
-        cor = _STATUS_COR.get(status, AZURE_BRT)
+        # Selecionada: tudo branco (INK) — o destaque de fundo já marca a
+        # linha, cor por ação só atrapalharia a leitura em cima dele.
+        cor = INK if self.highlighted else _STATUS_COR.get(status, AZURE_BRT)
+        fraca = INK if self.highlighted else INK_FAINT
         icone = _STATUS_ICONE.get(status, "·")
         tag = _STATUS_ROTULO.get(status, status).upper()
-        rem = it.remetente or "(sem remetente)"
-        badge = f"[{INK_FAINT}][{it.conta}][/] " if self._mostrar_badge else ""
-        return f"[b {cor}]{icone} {tag:<8}[/]  {badge}{rem}"
+        rem = mesc(fmt_remetente(it.remetente))
+        badge = f"[{fraca}]\\[{it.conta}][/] " if self._mostrar_badge else ""
+        return f"[b {cor}]{icone} {tag:<8}[/]  {badge}[{INK}]{rem}[/]"
 
     def _linha2(self) -> str:
         it = self.item
         data = fmt_data(it.data)
-        assunto = it.assunto or "(sem assunto)"
-        sufixo = f"   [{INK_FAINT}]·[/]  [{INK_FAINT}]{data}[/]" if data else ""
-        return f"      [{INK_DIM}]{assunto}[/]{sufixo}"
+        assunto = mesc(it.assunto or "(sem assunto)")
+        fraca = INK if self.highlighted else INK_FAINT
+        cor_assunto = INK if self.highlighted else INK_DIM
+        sufixo = f"   [{fraca}]·[/]  [{fraca}]{data}[/]" if data else ""
+        return f"      [{cor_assunto}]{assunto}[/]{sufixo}"
+
+    def watch_highlighted(self, value: bool) -> None:
+        super().watch_highlighted(value)
+        if self.is_mounted:
+            self.refresh_text()
 
     def refresh_text(self) -> None:
         self.query_one(".er-top", Label).update(self._linha1())
+        self.query_one(".er-sub", Label).update(self._linha2())
 
 
 class QueueScreen(Screen):
@@ -85,6 +98,7 @@ class QueueScreen(Screen):
         Binding("m", "decidir('manter')", "manter"),
         Binding("b", "aprender('blocklist')", "block"),
         Binding("a", "aprender('allowlist')", "allow"),
+        Binding("v", "visualizar", "preview"),
         Binding("u", "desfazer", "desfazer"),
         Binding("c", "pegar_codigo", "código"),
         Binding("s", "sincronizar", "sincronizar"),
@@ -106,6 +120,7 @@ class QueueScreen(Screen):
                     ("M", "Manter", COR_MANTER),
                     ("B", "Bloquear", COR_LIXEIRA),
                     ("A", "Permitir", COR_MANTER),
+                    ("V", "Preview"),
                     ("C", "Código"),
                     ("S", "Sincronizar"),
                     ("U", "Desfazer"),
@@ -128,6 +143,7 @@ class QueueScreen(Screen):
         # Sincronização ao vivo (bind S) — roda num worker em thread; não
         # bloqueia a navegação nem as outras ações.
         self._sync_ativo = False
+        self._sync_conta: str | None = None
         self._sync_encontrados = 0
         self._sync_analisando = 0
         self._sync_rows: dict[tuple, EmailRow] = {}
@@ -184,8 +200,9 @@ class QueueScreen(Screen):
         alterna = (
             f"    [{INK_FAINT}](⇥ conta: {rotulo_conta})[/]" if len(self._contas) > 2 else ""
         )
+        sync_alvo = f" {self._sync_conta}" if self._sync_conta else ""
         sync_txt = (
-            f"    [{AMBER}](⇄ sincronizando… {self._sync_encontrados} encontrado(s)"
+            f"    [{AMBER}](⇄ sincronizando{sync_alvo}… {self._sync_encontrados} encontrado(s)"
             f"{f', {self._sync_analisando} analisando' if self._sync_analisando else ''})[/]"
             if self._sync_ativo
             else ""
@@ -216,7 +233,7 @@ class QueueScreen(Screen):
         idx = self._idx()
         if idx is None or idx >= len(self._exibidos):
             return
-        rem = self._exibidos[idx].remetente
+        rem = mesc(self._exibidos[idx].remetente)
         await self.decidir(acao)
         self._msg(f"[{ACAO_COR[acao]}]→ {ACAO_ROTULO[acao]}:[/] {rem}")
 
@@ -233,7 +250,7 @@ class QueueScreen(Screen):
         try:
             status = add_rule_entry(self.app.rules_path, lista=lista, tipo="dominio", valor=dominio)
         except Exception as e:  # não derruba a UI por erro de escrita
-            self._msg(f"[{COR_LIXEIRA}]erro ao gravar regra: {e}[/]")
+            self._msg(f"[{COR_LIXEIRA}]erro ao gravar regra: {mesc(str(e))}[/]")
             return
         rule_undo = (lista, "dominio", dominio) if status == "added" else None
         await self.decidir(acao, rule_undo)
@@ -250,7 +267,7 @@ class QueueScreen(Screen):
             try:
                 remove_rule_entry(self.app.rules_path, lista=rule_undo[0], tipo=rule_undo[1], valor=rule_undo[2])
             except Exception as e:
-                pre = f"[{COR_LIXEIRA}](regra não removida: {e})[/] "
+                pre = f"[{COR_LIXEIRA}](regra não removida: {mesc(str(e))})[/] "
         it.acao = anterior
         idx_fila = min(idx, len(self.app.queue))
         self.app.queue.insert(idx_fila, it)
@@ -262,7 +279,7 @@ class QueueScreen(Screen):
             self._list.insert(idx_exib, [EmailRow(it, mostrar_badge=self._mostrar_badge())])
             self._list.index = idx_exib
         self._render_header()
-        self._msg(pre + f"↩ desfeito: {it.remetente}")
+        self._msg(pre + f"↩ desfeito: {mesc(it.remetente)}")
 
     def action_aplicar(self) -> None:
         itens = [
@@ -299,6 +316,17 @@ class QueueScreen(Screen):
             return
         self.app.push_screen(CodeModal(self._exibidos[idx]))
 
+    def action_visualizar(self) -> None:
+        idx = self._idx()
+        if idx is None or idx >= len(self._exibidos):
+            return
+        if not self.app.config:
+            self._msg(f"[{COR_LIXEIRA}]configuração não carregada[/]")
+            return
+        from apolo.ui.email_preview import EmailPreviewModal
+
+        self.app.push_screen(EmailPreviewModal(self._exibidos[idx]))
+
     # ----- sincronizar (ao vivo, sem travar a tela) -----
     def action_sincronizar(self) -> None:
         if self._sync_ativo:
@@ -307,22 +335,30 @@ class QueueScreen(Screen):
         if not self.app.config:
             self._msg(f"[{COR_LIXEIRA}]configuração não carregada[/]")
             return
+        # Sincroniza só a conta do filtro atual (⇥); "todas" varre tudo.
+        conta = self._conta_atual
         self._sync_ativo = True
+        self._sync_conta = conta
         self._sync_encontrados = 0
         self._sync_analisando = 0
         self._render_header()
-        self._msg(f"[{AMBER}]sincronizando em segundo plano…[/]")
-        self._sincronizar()
+        rotulo = conta or "todas as contas"
+        self._msg(f"[{AMBER}]sincronizando {rotulo} em segundo plano…[/]")
+        self._sincronizar(conta)
 
     @work(thread=True, exclusive=True, group="sync")
-    def _sincronizar(self) -> None:
+    def _sincronizar(self, conta: str | None) -> None:
         from apolo.sync import run_sync
 
         def on_event(kind, *args, **kwargs) -> None:
             self.app.call_from_thread(self._evento_sync, kind, args, kwargs)
 
         try:
-            run_sync(self.app.config, limit=self.app.config.sync_limit, on_event=on_event)
+            run_sync(
+                self.app.config, limit=self.app.config.sync_limit, on_event=on_event,
+                skip_contas=set(getattr(self.app, "contas_invalidas", {})),
+                only_conta=conta,
+            )
         except Exception as exc:
             self.app.call_from_thread(self._evento_sync, "erro_fatal", (str(exc),), {})
 
@@ -359,10 +395,10 @@ class QueueScreen(Screen):
                 row.refresh_text()
             self._render_header()
         elif kind == "erro":
-            self.app.notify(f"[{kwargs.get('conta')}] {kwargs.get('msg')}", severity="warning", title="sincronizar")
+            self.app.notify(mesc(f"[{kwargs.get('conta')}] {kwargs.get('msg')}"), severity="warning", title="sincronizar")
         elif kind == "erro_fatal":
             self._sync_ativo = False
-            self._msg(f"[{COR_LIXEIRA}]sincronização: {args[0]}[/]")
+            self._msg(f"[{COR_LIXEIRA}]sincronização: {mesc(args[0])}[/]")
             self._render_header()
         elif kind == "fim":
             self._sync_ativo = False
@@ -370,13 +406,30 @@ class QueueScreen(Screen):
             self._render_header()
 
     def _inserir_item_sync(self, it: Item) -> None:
-        self.app.queue.append(it)
+        # Mantém a ordem da fila (fetch_queue: mais recentes primeiro pela data
+        # real do header) — o item entra na posição da data dele, não no fim.
+        from apolo.storage.db import _data_ordenavel
+
+        chave = _data_ordenavel(it.data)
+
+        def _pos(itens: list[Item]) -> int:
+            return next(
+                (i for i, o in enumerate(itens) if _data_ordenavel(o.data) < chave),
+                len(itens),
+            )
+
+        self.app.queue.insert(_pos(self.app.queue), it)
         if self._conta_atual is not None and it.conta != self._conta_atual:
             return
-        self._exibidos.append(it)
+        pos = _pos(self._exibidos)
+        self._exibidos.insert(pos, it)
         row = EmailRow(it, mostrar_badge=self._mostrar_badge())
         self._sync_rows[(it.conta, it.pasta, it.uid)] = row
-        self._list.append(row)
+        idx = self._list.index
+        self._list.insert(pos, [row])
+        # Entrou acima do cursor: compensa pra seleção não pular de email.
+        if idx is not None and pos <= idx:
+            self._list.index = idx + 1
 
     def action_alternar_conta(self) -> None:
         """Cicla a visão da fila entre "todas" e cada conta vinculada."""
@@ -432,7 +485,7 @@ class DispatchModal(ModalScreen):
                 partes.append(f"{res.falhas} falha(s)")
             msg = ", ".join(partes)
         except Exception as exc:
-            msg = f"erro: {exc}"
+            msg = f"erro: {mesc(str(exc))}"
         self.app.call_from_thread(self.dismiss, msg)
 
 
@@ -481,7 +534,7 @@ class CodeModal(ModalScreen):
     def _mostrar(self, cands: list, err: str | None) -> None:
         msg = self.query_one("#code-msg", Static)
         if err:
-            msg.update(f"[{COR_LIXEIRA}]erro: {err}[/]")
+            msg.update(f"[{COR_LIXEIRA}]erro: {mesc(err)}[/]")
             return
         if not cands:
             msg.update(f"[{AMBER}]nenhum código ou link de confirmação encontrado.[/]")
@@ -493,7 +546,7 @@ class CodeModal(ModalScreen):
             cor = COR_MANTER if c.kind == "código" else AZURE_BRT
             icone = "◆" if c.kind == "código" else "↗"
             valor = c.value if len(c.value) <= 64 else c.value[:63] + "…"
-            lv.append(ListItem(Label(f"[{cor}]{icone} {c.kind:<7}[/]  {valor}", markup=True)))
+            lv.append(ListItem(Label(f"[{cor}]{icone} {c.kind:<7}[/]  {mesc(valor)}", markup=True)))
         lv.display = True
         lv.index = 0
         lv.focus()
@@ -507,7 +560,7 @@ class CodeModal(ModalScreen):
             return
         c = self._cands[idx]
         if copy_to_clipboard(c.value):
-            self.app.notify(f"Copiado: {c.value}", title="apolo")
+            self.app.notify(f"Copiado: {mesc(c.value)}", title="apolo")
         else:
             self.app.notify(
                 "Sem wl-copy/xclip/xsel pra copiar.", title="apolo", severity="warning"

@@ -71,6 +71,15 @@ APOLO_THEME = Theme(
 )
 
 
+def mesc(s: str) -> str:
+    """Escapa `[` pra texto vindo de fora (assunto, remetente, erro) entrar
+    seguro no markup — sem escape, um "[Tag]" vira tag de estilo (o texto
+    some) e um "[/x]" estoura MarkupError. `]` solto não precisa de escape;
+    escapá-lo deixaria uma `\\` literal no render.
+    """
+    return s.replace("[", "\\[")
+
+
 def keybar(pairs: list[tuple]) -> str:
     """Markup de uma barra de atalhos: tecla em destaque + rótulo em Title Case.
 
