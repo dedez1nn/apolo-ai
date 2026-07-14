@@ -12,7 +12,7 @@ import struct
 import tempfile
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import Message
 from html.parser import HTMLParser
 from pathlib import Path
@@ -38,6 +38,29 @@ _BLOCK_TAGS = {
     "article", "aside", "blockquote", "div", "figcaption", "footer", "h1", "h2", "h3",
     "h4", "h5", "h6", "header", "li", "main", "p", "pre", "section",
 }
+# Tags sem fechamento correspondente — não empilham em _hidden_stack (senão
+# um <br> sem barra de auto-fechamento desalinha a pilha pro resto do doc).
+_VOID_TAGS = {"br", "hr", "img", "meta", "link", "input", "area", "base", "col", "embed", "source", "track", "wbr"}
+
+# Preheader oculto: newsletters escondem um textão (geralmente preenchido com
+# caracteres invisíveis tipo zero-width) atrás de `display:none`/`visibility:
+# hidden` só pra controlar o preview do cliente de email. Sem isso, esse lixo
+# aparecia como o primeiro "parágrafo" da prévia — a origem mais comum do
+# efeito "estrofe de poema" (texto sem sentido, cheio de espaços/pontos soltos).
+# Não inclui `font-size:0` — é um reset de espaçamento comuníssimo em
+# templates baseados em tabela (MJML e cia) e escondê-lo apaga o corpo inteiro.
+_HIDDEN_STYLE_RE = re.compile(
+    r"display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all",
+    re.IGNORECASE,
+)
+
+
+def _looks_hidden(attrs: dict[str, str]) -> bool:
+    if "hidden" in attrs:
+        return True
+    if (attrs.get("aria-hidden") or "").strip().lower() == "true":
+        return True
+    return bool(_HIDDEN_STYLE_RE.search(attrs.get("style") or ""))
 
 
 @dataclass
@@ -60,6 +83,7 @@ class _PreviewBlock:
 class _PreviewDoc:
     blocks: list[_PreviewBlock]
     resumo: str
+    links: list[str] = field(default_factory=list)
 
 
 def _decode_part(part: Message) -> str:
@@ -230,9 +254,12 @@ class _HtmlToBlocks(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.resolver = resolver
         self.blocks: list[_PreviewBlock] = []
+        self.links: list[str] = []
         self._skip_depth = 0
+        self._hidden_stack: list[bool] = []
         self._tag_stack: list[str] = []
         self._link_stack: list[str] = []
+        self._link_ref_stack: list[int | None] = []
         self._list_stack: list[dict[str, int]] = []
         self._variant = "body"
         self._align = "left"
@@ -245,12 +272,17 @@ class _HtmlToBlocks(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs) -> None:
         tag = tag.lower()
+        attrs_map = dict(attrs)
+        hidden = bool(self._hidden_stack and self._hidden_stack[-1]) or _looks_hidden(attrs_map)
+        if tag not in _VOID_TAGS:
+            self._hidden_stack.append(hidden)
+        if hidden:
+            return
         if tag in _DROP_CONTENT:
             self._skip_depth += 1
             return
         if self._skip_depth:
             return
-        attrs_map = dict(attrs)
         if self._table_rows is not None:
             self._handle_table_start(tag)
             return
@@ -286,11 +318,18 @@ class _HtmlToBlocks(HTMLParser):
             self._list_stack.append({"tag": tag, "index": 0})
             return
         if tag == "a":
-            self._link_stack.append(attrs_map.get("href", ""))
+            href = attrs_map.get("href", "")
+            self._link_stack.append(href)
+            self._link_ref_stack.append(self._register_link(href))
         self._tag_stack.append(tag)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        was_hidden = bool(self._hidden_stack and self._hidden_stack[-1])
+        if tag not in _VOID_TAGS and self._hidden_stack:
+            self._hidden_stack.pop()
+        if was_hidden:
+            return
         if tag in _DROP_CONTENT and self._skip_depth > 0:
             self._skip_depth -= 1
             return
@@ -301,8 +340,10 @@ class _HtmlToBlocks(HTMLParser):
             return
         if tag == "a":
             href = self._link_stack.pop() if self._link_stack else ""
-            if href and href not in "".join(self._plain_parts):
-                self._append_inline(f" [{INK_FAINT}]<{mesc(href)}>[/]", f" <{href}>")
+            ref = self._link_ref_stack.pop() if self._link_ref_stack else None
+            if href and ref is not None and href not in "".join(self._plain_parts):
+                marker = f" [{INK_FAINT} @click=screen.abrir_link({ref})]({ref})[/]"
+                self._append_inline(marker, f" ({ref})")
         if tag in _BLOCK_TAGS:
             self._flush_text()
         if tag in {"ol", "ul"} and self._list_stack:
@@ -311,6 +352,8 @@ class _HtmlToBlocks(HTMLParser):
         self._pop_tag(tag)
 
     def handle_data(self, data: str) -> None:
+        if self._hidden_stack and self._hidden_stack[-1]:
+            return
         if self._skip_depth or not data:
             return
         if self._table_cell is not None:
@@ -405,6 +448,19 @@ class _HtmlToBlocks(HTMLParser):
             return f"{top['index']}. "
         return "• "
 
+    def _register_link(self, href: str) -> int | None:
+        """Registra a URL numa lista à parte (ver `_build_preview`) em vez de
+        despejá-la inline — links de rastreamento chegam a centenas de
+        caracteres e, dentro do parágrafo, quebravam a frase em várias linhas
+        curtas sem sentido (o efeito "poema" reportado na prévia)."""
+        href = (href or "").strip()
+        if not href.startswith(("http://", "https://", "mailto:")):
+            return None
+        if href in self.links:
+            return self.links.index(href) + 1
+        self.links.append(href)
+        return len(self.links)
+
     def _append_linebreak(self) -> None:
         if not self._markup_parts:
             return
@@ -430,6 +486,9 @@ class _HtmlToBlocks(HTMLParser):
             styles.append(INK_FAINT)
         if self._link_stack:
             styles.extend([AZURE_BRT, "u"])
+            ref = self._link_ref_stack[-1] if self._link_ref_stack else None
+            if ref is not None:
+                styles.append(f"@click=screen.abrir_link({ref})")
         if not styles:
             return escaped
         return "".join(f"[{style}]" for style in styles) + escaped + ("[/]" * len(styles))
@@ -535,6 +594,7 @@ def _build_preview(msg: Message, asset_dir: Path) -> _PreviewDoc:
     html, plain, cid_images, loose_images = _extract_parts(msg, asset_dir)
     blocks: list[_PreviewBlock]
     resumo: list[str] = []
+    links: list[str] = []
 
     if html.strip():
         resolver = _ImageResolver(asset_dir, cid_images)
@@ -555,6 +615,17 @@ def _build_preview(msg: Message, asset_dir: Path) -> _PreviewDoc:
             resumo.append(f"{imagens} imagem(ns)")
         if resolver.external_failed:
             resumo.append(f"{resolver.external_failed} externa(s) indisponível(is)")
+        links = parser.links
+        if parser.links:
+            corpo = "\n".join(
+                f"[{INK_FAINT} @click=screen.abrir_link({i})]({i}) {mesc(link)}[/]"
+                for i, link in enumerate(parser.links, start=1)
+            )
+            blocks.append(_PreviewBlock(kind="divider"))
+            blocks.append(
+                _PreviewBlock(kind="text", text=f"[{AZURE_BRT} b]Links mencionados[/]\n{corpo}", variant="links")
+            )
+            resumo.append(f"{len(parser.links)} link(s)")
     else:
         blocks = _plain_blocks(plain)
         resumo.append("texto simples")
@@ -562,18 +633,20 @@ def _build_preview(msg: Message, asset_dir: Path) -> _PreviewDoc:
             blocks.append(_PreviewBlock(kind="image", asset=asset, caption=asset.label))
     if not blocks:
         blocks = [_PreviewBlock(kind="text", text=f"[{INK_FAINT}](sem corpo renderizável)[/]")]
-    return _PreviewDoc(blocks=blocks, resumo=" · ".join(resumo))
+    return _PreviewDoc(blocks=blocks, resumo=" · ".join(resumo), links=links)
 
 
 class EmailPreviewModal(ModalScreen):
     BINDINGS = [
         Binding("escape,q", "fechar", "fechar"),
+        Binding("g", "abrir_origem", "abrir origem"),
     ]
 
     def __init__(self, item: Item):
         super().__init__()
         self._item = item
         self._tmp = tempfile.TemporaryDirectory(prefix="apolo-email-preview-")
+        self._links: list[str] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(id="mail-box"):
@@ -581,7 +654,10 @@ class EmailPreviewModal(ModalScreen):
             yield Static(f"[{INK_FAINT}]carregando email…[/]", id="mail-status", markup=True)
             with VerticalScroll(id="mail-scroll"):
                 yield Vertical(Static(f"[{INK_FAINT}]buscando corpo e assets…[/]", markup=True), id="mail-page")
-            yield Static(keybar([("Q", "Fechar"), ("Mouse", "Rolar")]), classes="keybar")
+            yield Static(
+                keybar([("Q", "Fechar"), ("G", self._origem_rotulo()), ("Mouse", "Rolar / abrir link")]),
+                classes="keybar",
+            )
 
     def on_mount(self) -> None:
         self.query_one("#mail-scroll", VerticalScroll).focus()
@@ -633,6 +709,7 @@ class EmailPreviewModal(ModalScreen):
 
     def _mostrar(self, doc: _PreviewDoc) -> None:
         try:
+            self._links = doc.links
             self.query_one("#mail-status", Static).update(f"[{INK_FAINT}]{mesc(doc.resumo)}[/]")
             page = self.query_one("#mail-page", Vertical)
             page.query("*").remove()
@@ -677,3 +754,36 @@ class EmailPreviewModal(ModalScreen):
 
     def action_fechar(self) -> None:
         self.dismiss()
+
+    def _origem_rotulo(self) -> str:
+        return "Abrir no Gmail" if self._item.conta.startswith("gmail:") else "Abrir no Proton"
+
+    def _origem_url(self) -> str | None:
+        if self._item.conta.startswith("gmail:"):
+            msgid = (self._item.message_id or "").strip().strip("<>")
+            if not msgid:
+                return None
+            query = urllib.parse.quote(f"rfc822msgid:{msgid}")
+            return f"https://mail.google.com/mail/u/0/#search/{query}"
+        if self._item.conta == "proton":
+            # O Bridge (IMAP local) não expõe o ID web da mensagem — abre a
+            # caixa de entrada do Proton, não o email específico.
+            return "https://mail.proton.me/u/0/inbox"
+        return None
+
+    def action_abrir_origem(self) -> None:
+        url = self._origem_url()
+        if url is None:
+            self.query_one("#mail-status", Static).update(
+                f"[{COR_LIXEIRA}]sem link direto pra essa mensagem[/]"
+            )
+            return
+        self.app.open_url(url)
+
+    def action_abrir_link(self, ref: int) -> None:
+        """Disparado pelo `@click` embutido no markup dos links da prévia (ver
+        `_HtmlToBlocks`/`_build_preview`) — clicar no texto do link ou na
+        referência numerada `(n)` abre a URL de verdade no navegador."""
+        if not (1 <= ref <= len(self._links)):
+            return
+        self.app.open_url(self._links[ref - 1])
