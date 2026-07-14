@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS emails (
     regra_casada   TEXT,
     processado_em  TEXT,
     provider_id    TEXT,
+    origem_despacho TEXT,
     PRIMARY KEY (pasta, uidvalidity, uid)
 );
 
@@ -80,6 +81,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_conta ON emails (conta)")
     if "provider_id" not in cols_emails:
         conn.execute("ALTER TABLE emails ADD COLUMN provider_id TEXT")
+    if "origem_despacho" not in cols_emails:
+        conn.execute("ALTER TABLE emails ADD COLUMN origem_despacho TEXT")
 
     cols_acoes = {r[1] for r in conn.execute("PRAGMA table_info(acoes)").fetchall()}
     if "conta" not in cols_acoes:
@@ -173,23 +176,26 @@ class Storage:
                 (pasta, uidvalidity, ultimo_uid),
             )
 
-    def decided_message_ids(self, pasta: str) -> dict[str, str]:
-        """message_id -> acao_aplicada dos emails JÁ despachados nesta pasta.
+    def decided_message_ids(self, pasta: str) -> dict[str, tuple[str, str | None]]:
+        """message_id -> (acao_aplicada, origem_despacho) dos emails JÁ
+        despachados nesta pasta.
 
         Usado pra preservar decisões através de um resync: quando o Bridge troca
         o UIDVALIDITY, os UIDs mudam mas o message_id não. Um email que o dono já
-        mandou pra lixeira / manteve não deve voltar pra fila só por isso. Capture
-        ANTES de reset_folder (que apaga as linhas).
+        mandou pra lixeira / manteve não deve voltar pra fila só por isso — e se
+        foi um auto-envio, a origem é preservada também (senão ele some da tela
+        "Emails de ruído" só por causa do resync). Capture ANTES de reset_folder
+        (que apaga as linhas).
         """
         rows = self.conn.execute(
             """
-            SELECT message_id, acao_aplicada FROM emails
+            SELECT message_id, acao_aplicada, origem_despacho FROM emails
              WHERE pasta = ? AND status = ? AND message_id IS NOT NULL
             """,
             (pasta, STATUS_DESPACHADO),
         ).fetchall()
         return {
-            r["message_id"].strip(): (r["acao_aplicada"] or "")
+            r["message_id"].strip(): (r["acao_aplicada"] or "", r["origem_despacho"])
             for r in rows
             if (r["message_id"] or "").strip()
         }
@@ -350,17 +356,59 @@ class Storage:
         return row["n"] if row else 0
 
     def mark_dispatched(
-        self, *, pasta: str, uidvalidity: int, uid: int, acao_aplicada: str
+        self, *, pasta: str, uidvalidity: int, uid: int, acao_aplicada: str, origem: str | None = None
     ) -> None:
-        """Email saiu da fila: registra a ação efetivamente aplicada."""
+        """Email saiu da fila: registra a ação efetivamente aplicada.
+
+        `origem` marca "auto" quando foi o auto-envio (cascata determinística,
+        sem passar pela fila — ver `apolo.actions.dispatch_lixeira_imap`/
+        `dispatch_lixeira_gmail`) — é o que distingue um despacho automático de
+        um manual (mesmo `acao_aplicada`) pra tela "Emails de ruído". None pro
+        despacho manual (fila normal).
+        """
         with self._tx() as conn:
             conn.execute(
                 """
                 UPDATE emails
-                   SET status = ?, acao_aplicada = ?, processado_em = ?
+                   SET status = ?, acao_aplicada = ?, processado_em = ?, origem_despacho = ?
                  WHERE pasta = ? AND uidvalidity = ? AND uid = ?
                 """,
-                (STATUS_DESPACHADO, acao_aplicada, _now(), pasta, uidvalidity, uid),
+                (STATUS_DESPACHADO, acao_aplicada, _now(), origem, pasta, uidvalidity, uid),
+            )
+
+    # ----- "emails de ruído" (auto-envio pra lixeira sem passar pela fila) -----
+    def trashed_rows(self) -> list[sqlite3.Row]:
+        """Despachados como lixeira PELO AUTO-ENVIO (`origem_despacho='auto'`
+        — não inclui lixeira despachada manualmente pela fila normal), mais
+        perto de expirar primeiro (`processado_em` ascendente) — pra tela
+        "Emails de ruído".
+        """
+        rows = self.conn.execute(
+            """
+            SELECT conta, pasta, uidvalidity, uid, message_id, remetente, assunto,
+                   data, categoria, acao_sugerida, acao_aplicada, regra_casada,
+                   processado_em, provider_id
+              FROM emails
+             WHERE status = ? AND acao_aplicada = ? AND origem_despacho = ?
+            """,
+            (STATUS_DESPACHADO, "lixeira", "auto"),
+        ).fetchall()
+        return sorted(rows, key=lambda r: r["processado_em"] or "", reverse=False)
+
+    def mark_restaurado(self, *, pasta: str, uidvalidity: int, uid: int) -> None:
+        """Email tirado da lixeira (ver `apolo.actions.restaurar_email`): volta
+        pra 'aguardando' — reaparece na fila normal pro dono decidir de novo,
+        sem risco de cair de novo no auto-envio (a próxima sync ignora UIDs já
+        existentes no banco).
+        """
+        with self._tx() as conn:
+            conn.execute(
+                """
+                UPDATE emails
+                   SET status = ?, acao_aplicada = NULL, processado_em = NULL, origem_despacho = NULL
+                 WHERE pasta = ? AND uidvalidity = ? AND uid = ?
+                """,
+                (STATUS_AGUARDANDO, pasta, uidvalidity, uid),
             )
 
     def stuck_default_rows(self) -> list[sqlite3.Row]:

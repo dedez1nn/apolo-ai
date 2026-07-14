@@ -41,13 +41,81 @@ class DispatchResult:
     falhas: int = 0
 
 
+def dispatch_lixeira_imap(
+    client, store: Storage, itens: list[DispatchItem], *, pasta_real: str, trash_folder: str,
+    chunk_size: int = 300, origem: str | None = None,
+) -> DispatchResult:
+    """Move UM lote de itens 'lixeira' de uma única pasta já conhecida, com um
+    client IMAP já logado. Núcleo comum de `dispatch`/`dispatch_imap_account`
+    (fila manual, agrupam por pasta e chamam isto pra cada uma) e do auto-envio
+    do sync (cascata decidiu lixeira sozinha — ver `apolo.sync`/`apolo.cli`),
+    que já tem a conexão aberta e não precisa reconectar pra despachar.
+
+    Lote via `BridgeClient.copy_to_bulk` (1 SELECT + COPY/STORE em chunks) em
+    vez de um UID por vez. Um UID que não deu certo (ex.: obsoleto após resync
+    do Bridge) é pulado e contado em `falhas`, sem abortar o resto.
+
+    `origem="auto"` marca no banco que foi o auto-envio (pra tela "Emails de
+    ruído" distinguir de um despacho manual pela fila) — None é o padrão do
+    despacho manual, que não passa esse argumento.
+    """
+    result = DispatchResult()
+    by_uid = {item.uid: item for item in itens}
+    uids = list(by_uid.keys())
+    if not uids:
+        return result
+
+    try:
+        uids_ok = set(client.copy_to_bulk(pasta_real, uids, trash_folder, chunk_size=chunk_size))
+    except Exception as e:
+        logger.warning("lote de lixeira em %s falhou por completo: %s", pasta_real, e)
+        print(f"aviso: lote de lixeira em {pasta_real} falhou: {e}", file=sys.stderr)
+        uids_ok = set()
+
+    for uid in uids:
+        if uid not in uids_ok:
+            logger.warning("pulei %s UID %d (lixeira): não copiado.", pasta_real, uid)
+            print(f"aviso: pulei {pasta_real} UID {uid} (lixeira): não copiado", file=sys.stderr)
+            result.falhas += 1
+            continue
+        item = by_uid[uid]
+        store.log_action(
+            pasta=item.pasta,
+            uidvalidity=item.uidvalidity,
+            uid=item.uid,
+            acao=ACAO_LIXEIRA,
+            dado_reverter=json.dumps(
+                {
+                    "destino": trash_folder,
+                    "pasta_origem": item.pasta,
+                    "message_id": item.message_id,
+                }
+            ),
+        )
+        store.mark_dispatched(
+            pasta=item.pasta,
+            uidvalidity=item.uidvalidity,
+            uid=item.uid,
+            acao_aplicada=ACAO_LIXEIRA,
+            origem=origem,
+        )
+        result.lixeira += 1
+
+    # EXPUNGE depois de marcar tudo, pra não reabrir a pasta a cada email.
+    if uids_ok:
+        try:
+            client.expunge(pasta_real)
+        except Exception as e:
+            logger.warning("EXPUNGE em %s falhou: %s", pasta_real, e)
+            print(f"aviso: EXPUNGE em {pasta_real} falhou: {e}", file=sys.stderr)
+
+    return result
+
+
 def dispatch(client: BridgeClient, store: Storage, itens: list[DispatchItem], *, trash_folder: str) -> DispatchResult:
     """Aplica as ações: 'manter' só marca despachado; 'lixeira' move pra Trash.
 
-    Lixeira é despachada em lote por pasta (1 SELECT + COPY/STORE em chunks —
-    ver `BridgeClient.copy_to_bulk`), bem mais rápido que um UID por vez. Um
-    UID que não deu certo no lote (ex.: obsoleto após resync do Bridge) é
-    pulado e contado em `falhas`, sem abortar o resto.
+    Agrupa por pasta e despacha cada grupo com `dispatch_lixeira_imap`.
     """
     result = DispatchResult()
 
@@ -66,50 +134,9 @@ def dispatch(client: BridgeClient, store: Storage, itens: list[DispatchItem], *,
         # 'revisar' (indeciso) não é despachado: fica na fila pra próxima.
 
     for pasta, pasta_itens in lixeira_por_pasta.items():
-        by_uid = {item.uid: item for item in pasta_itens}
-        uids = list(by_uid.keys())
-        try:
-            uids_ok = set(client.copy_to_bulk(pasta, uids, trash_folder))
-        except Exception as e:
-            logger.warning("lote de lixeira em %s falhou por completo: %s", pasta, e)
-            print(f"aviso: lote de lixeira em {pasta} falhou: {e}", file=sys.stderr)
-            uids_ok = set()
-
-        for uid in uids:
-            if uid not in uids_ok:
-                logger.warning("pulei %s UID %d (lixeira): não copiado.", pasta, uid)
-                print(f"aviso: pulei {pasta} UID {uid} (lixeira): não copiado", file=sys.stderr)
-                result.falhas += 1
-                continue
-            item = by_uid[uid]
-            store.log_action(
-                pasta=item.pasta,
-                uidvalidity=item.uidvalidity,
-                uid=item.uid,
-                acao=ACAO_LIXEIRA,
-                dado_reverter=json.dumps(
-                    {
-                        "destino": trash_folder,
-                        "pasta_origem": item.pasta,
-                        "message_id": item.message_id,
-                    }
-                ),
-            )
-            store.mark_dispatched(
-                pasta=item.pasta,
-                uidvalidity=item.uidvalidity,
-                uid=item.uid,
-                acao_aplicada=ACAO_LIXEIRA,
-            )
-            result.lixeira += 1
-
-        # EXPUNGE depois de marcar tudo, pra não reabrir a pasta a cada email.
-        if uids_ok:
-            try:
-                client.expunge(pasta)
-            except Exception as e:
-                logger.warning("EXPUNGE em %s falhou: %s", pasta, e)
-                print(f"aviso: EXPUNGE em {pasta} falhou: {e}", file=sys.stderr)
+        res = dispatch_lixeira_imap(client, store, pasta_itens, pasta_real=pasta, trash_folder=trash_folder)
+        result.lixeira += res.lixeira
+        result.falhas += res.falhas
 
     return result
 
@@ -146,49 +173,75 @@ def dispatch_imap_account(
             result.mantidos += 1
 
     for pasta_real, pasta_itens in lixeira_por_pasta.items():
-        by_uid = {item.uid: item for item in pasta_itens}
-        uids = list(by_uid.keys())
+        res = dispatch_lixeira_imap(
+            client, store, pasta_itens, pasta_real=pasta_real, trash_folder=trash_folder, chunk_size=chunk_size
+        )
+        result.lixeira += res.lixeira
+        result.falhas += res.falhas
+
+    return result
+
+
+def dispatch_lixeira_gmail(
+    client, store: Storage, itens: list[DispatchItem], *, origem: str | None = None
+) -> DispatchResult:
+    """Move um lote de itens 'lixeira' via um `GmailClient` já autorizado.
+
+    Núcleo comum de `dispatch_gmail` (fila manual, constrói o client) e do
+    auto-envio do sync (cascata decidiu lixeira sozinha), que já tem o client
+    aberto e evita reconstruí-lo pra cada pasta.
+
+    `origem="auto"` marca no banco que foi o auto-envio (pra tela "Emails de
+    ruído" distinguir de um despacho manual pela fila) — None é o padrão do
+    despacho manual, que não passa esse argumento.
+    """
+    result = DispatchResult()
+    lixeira_com_id = [i for i in itens if i.provider_id]
+    lixeira_sem_id = [i for i in itens if not i.provider_id]
+
+    ids_ok: set[str] = set()
+    if lixeira_com_id:
+        provider_ids = [i.provider_id for i in lixeira_com_id]
         try:
-            uids_ok = set(client.copy_to_bulk(pasta_real, uids, trash_folder, chunk_size=chunk_size))
+            client.trash_messages_batch(provider_ids)
+            ids_ok = set(provider_ids)
         except Exception as e:
-            logger.warning("lote de lixeira em %s falhou por completo: %s", pasta_real, e)
-            print(f"aviso: lote de lixeira em {pasta_real} falhou: {e}", file=sys.stderr)
-            uids_ok = set()
-
-        for uid in uids:
-            if uid not in uids_ok:
-                logger.warning("pulei %s UID %d (lixeira): não copiado.", pasta_real, uid)
-                print(f"aviso: pulei {pasta_real} UID {uid} (lixeira): não copiado", file=sys.stderr)
-                result.falhas += 1
-                continue
-            item = by_uid[uid]
-            store.log_action(
-                pasta=item.pasta,
-                uidvalidity=item.uidvalidity,
-                uid=item.uid,
-                acao=ACAO_LIXEIRA,
-                dado_reverter=json.dumps(
-                    {
-                        "destino": trash_folder,
-                        "pasta_origem": item.pasta,
-                        "message_id": item.message_id,
-                    }
-                ),
+            logger.warning(
+                "lote de lixeira gmail:%s (%d item(ns)) falhou: %s", client.name, len(provider_ids), e
             )
-            store.mark_dispatched(
-                pasta=item.pasta,
-                uidvalidity=item.uidvalidity,
-                uid=item.uid,
-                acao_aplicada=ACAO_LIXEIRA,
-            )
-            result.lixeira += 1
+            print(f"aviso: lote de lixeira gmail:{client.name} falhou: {e}", file=sys.stderr)
 
-        if uids_ok:
-            try:
-                client.expunge(pasta_real)
-            except Exception as e:
-                logger.warning("EXPUNGE em %s falhou: %s", pasta_real, e)
-                print(f"aviso: EXPUNGE em {pasta_real} falhou: {e}", file=sys.stderr)
+    def _marcar_lixeira(item: DispatchItem) -> None:
+        store.log_action(
+            pasta=item.pasta,
+            uidvalidity=item.uidvalidity,
+            uid=item.uid,
+            acao=ACAO_LIXEIRA,
+            dado_reverter=json.dumps({
+                "provider_id": item.provider_id,
+                "conta": item.conta,
+            }),
+        )
+        store.mark_dispatched(
+            pasta=item.pasta,
+            uidvalidity=item.uidvalidity,
+            uid=item.uid,
+            acao_aplicada=ACAO_LIXEIRA,
+            origem=origem,
+        )
+        result.lixeira += 1
+
+    for item in lixeira_com_id:
+        if item.provider_id in ids_ok:
+            _marcar_lixeira(item)
+        else:
+            logger.warning("pulei gmail:%s %s (lixeira): lote falhou.", client.name, item.provider_id)
+            result.falhas += 1
+
+    # Sem provider_id não há o que chamar na API — só regulariza o estado
+    # (igual ao comportamento anterior, item a item).
+    for item in lixeira_sem_id:
+        _marcar_lixeira(item)
 
     return result
 
@@ -208,52 +261,12 @@ def dispatch_gmail(
     client = GmailClient(name, client_id, client_secret, token_path)
     result = DispatchResult()
 
-    lixeira_com_id = [i for i in itens if i.acao == ACAO_LIXEIRA and i.provider_id]
-    lixeira_sem_id = [i for i in itens if i.acao == ACAO_LIXEIRA and not i.provider_id]
+    lixeira_itens = [i for i in itens if i.acao == ACAO_LIXEIRA]
     manter_itens = [i for i in itens if i.acao == ACAO_MANTER]
 
-    ids_ok: set[str] = set()
-    if lixeira_com_id:
-        provider_ids = [i.provider_id for i in lixeira_com_id]
-        try:
-            client.trash_messages_batch(provider_ids)
-            ids_ok = set(provider_ids)
-        except Exception as e:
-            logger.warning(
-                "lote de lixeira gmail:%s (%d item(ns)) falhou: %s", name, len(provider_ids), e
-            )
-            print(f"aviso: lote de lixeira gmail:{name} falhou: {e}", file=sys.stderr)
-
-    def _marcar_lixeira(item: DispatchItem) -> None:
-        store.log_action(
-            pasta=item.pasta,
-            uidvalidity=item.uidvalidity,
-            uid=item.uid,
-            acao=ACAO_LIXEIRA,
-            dado_reverter=json.dumps({
-                "provider_id": item.provider_id,
-                "conta": item.conta,
-            }),
-        )
-        store.mark_dispatched(
-            pasta=item.pasta,
-            uidvalidity=item.uidvalidity,
-            uid=item.uid,
-            acao_aplicada=ACAO_LIXEIRA,
-        )
-        result.lixeira += 1
-
-    for item in lixeira_com_id:
-        if item.provider_id in ids_ok:
-            _marcar_lixeira(item)
-        else:
-            logger.warning("pulei gmail:%s %s (lixeira): lote falhou.", name, item.provider_id)
-            result.falhas += 1
-
-    # Sem provider_id não há o que chamar na API — só regulariza o estado
-    # (igual ao comportamento anterior, item a item).
-    for item in lixeira_sem_id:
-        _marcar_lixeira(item)
+    res = dispatch_lixeira_gmail(client, store, lixeira_itens)
+    result.lixeira += res.lixeira
+    result.falhas += res.falhas
 
     for item in manter_itens:
         store.mark_dispatched(
@@ -322,6 +335,68 @@ def fetch_message(config, item):
             return client.fetch_message_from(pasta_real, item.uid)
 
     return None
+
+
+def restaurar_email(config, item) -> None:
+    """Restaura um email que o auto-envio mandou pra lixeira sozinho (cascata
+    determinística — ver `apolo.sync`/`apolo.cli`), tirando-o de lá e voltando
+    o estado no banco pra 'aguardando' (fila normal de revisão manual).
+
+    Levanta `RuntimeError` se não conseguir (a tela "Emails de ruído" mostra o
+    erro sem quebrar) — não mexe na regra que causou o auto-envio; se ela
+    estiver errada, o dono edita nas Regras normalmente.
+    """
+    if item.conta.startswith("gmail:"):
+        from apolo.config import load_accounts
+        from apolo.fetch.gmail import GmailClient
+
+        if not item.provider_id:
+            raise RuntimeError("sem provider_id — não dá pra restaurar")
+        name = item.conta.removeprefix("gmail:")
+        account = next(
+            (a for a in load_accounts(config.accounts_path) if a.provider == "gmail" and a.name == name),
+            None,
+        )
+        if account is None:
+            raise RuntimeError(f"conta gmail:{name} não encontrada")
+        client = GmailClient(name, account.client_id, account.client_secret, config.tokens_dir / f"{name}.json")
+        client.untrash_message(item.provider_id)
+
+    elif item.conta == "proton":
+        config.require_credentials()
+        with BridgeClient(config.imap_host, config.imap_port, config.imap_security) as client:
+            client.login(config.username, config.password)
+            ok = client.restore_from_trash(config.trash_folder, item.message_id, item.pasta)
+        if not ok:
+            raise RuntimeError("não encontrei o email na lixeira pelo Message-ID")
+
+    elif item.conta.startswith("imap:"):
+        from apolo import secrets
+        from apolo.config import load_accounts
+
+        name = item.conta.removeprefix("imap:")
+        account = next(
+            (a for a in load_accounts(config.accounts_path) if a.provider == "imap" and a.name == name),
+            None,
+        )
+        if account is None:
+            raise RuntimeError(f"conta imap:{name} não encontrada")
+        senha = secrets.lookup_account_password(item.conta)
+        if not (account.host and account.username and senha):
+            raise RuntimeError("credenciais incompletas")
+        pasta_real = item.pasta.removeprefix(f"{item.conta}:")
+        with BridgeClient(account.host, account.port, account.security) as client:
+            client.login(account.username, senha)
+            ok = client.restore_from_trash(account.trash_folder, item.message_id, pasta_real)
+        if not ok:
+            raise RuntimeError("não encontrei o email na lixeira pelo Message-ID")
+
+    else:
+        raise RuntimeError(f"conta desconhecida: {item.conta}")
+
+    with Storage(config.db_path) as store:
+        store.mark_restaurado(pasta=item.pasta, uidvalidity=item.uidvalidity, uid=item.uid)
+        store.log_action(pasta=item.pasta, uidvalidity=item.uidvalidity, uid=item.uid, acao="restaurado")
 
 
 def fetch_body(config, item) -> str:

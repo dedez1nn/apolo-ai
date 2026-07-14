@@ -463,6 +463,12 @@ class GmailClient:
         token = self._ensure_token()
         self._api("POST", f"/users/me/messages/{gmail_id}/trash", token=token)
 
+    def untrash_message(self, gmail_id: str) -> None:
+        """Tira da lixeira via API dedicada (inverso de trash_message) — usado
+        pra restaurar um email que o auto-envio mandou pra lixeira sozinho."""
+        token = self._ensure_token()
+        self._api("POST", f"/users/me/messages/{gmail_id}/untrash", token=token)
+
     def trash_messages_batch(self, gmail_ids: list[str], *, chunk_size: int = 1000) -> None:
         """Move várias mensagens pra lixeira numa chamada só (batchModify).
 

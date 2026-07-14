@@ -36,6 +36,7 @@ from apolo.ui.theme import (
 _MENU = [
     ("review",  "✉", "Revisar fila"),
     ("swipe",   "♥", "Revisar no modo swipe (joguinho)"),
+    ("ruido",   "♻", "Emails de ruído (auto-enviados pra lixeira)"),
     ("add_rule", "+", "Adicionar regra"),
     ("preview", "◎", "Prévia — o que as regras pegariam"),
     ("sugestoes", "✦", "Sugestões (baseado no seu histórico)"),
@@ -99,13 +100,30 @@ class HubScreen(Screen):
         ia_badge = ""
         if cfg is not None:
             ia_badge = f"[{COR_MANTER}]IA[/]" if cfg.ai_enabled else f"[{INK_FAINT}]IA off[/]"
+        n_ruido = self._contar_ruido()
         badges = {
             "review": str(n_fila) if n_fila else "",
             "swipe": str(n_fila) if n_fila else "",
+            "ruido": str(n_ruido) if n_ruido else "",
             "rules": str(n_regras) if n_regras else "",
             "config": ia_badge,
         }
         return [MenuItem(key, icone, rotulo, badges.get(key, "")) for key, icone, rotulo in _MENU]
+
+    def _contar_ruido(self) -> int:
+        """Quantos "emails de ruído" (auto-enviados pra lixeira) ainda não
+        devem ter expirado — mesmo filtro da `RuidoScreen`."""
+        if not self.app.config:
+            return 0
+        from apolo.storage.db import Storage
+        from apolo.ui.ruido_screen import dias_restantes
+
+        try:
+            with Storage(self.app.config.db_path) as store:
+                rows = store.trashed_rows()
+        except Exception:
+            return 0
+        return sum(1 for r in rows if (dias_restantes(r["processado_em"]) or 0) >= 0)
 
     # ----- masthead -----
     def _brand(self) -> str:
@@ -189,6 +207,33 @@ class HubScreen(Screen):
             f"D/M/B/A da listagem normal, só que em forma de jogo.[/]"
         )
         return cab + rodape
+
+    def _det_ruido(self) -> str:
+        from apolo.storage.db import Storage
+        from apolo.ui.ruido_screen import dias_restantes
+
+        cab = self._titulo_det("Emails de ruído")
+        if not self.app.config:
+            return cab + f"\n[{INK_DIM}]Configuração não carregada.[/]"
+        try:
+            with Storage(self.app.config.db_path) as store:
+                rows = [r for r in store.trashed_rows() if (dias_restantes(r["processado_em"]) or 0) >= 0]
+        except Exception as exc:
+            return cab + f"\n[{COR_LIXEIRA}]Erro ao ler: {exc}[/]"
+        if not rows:
+            return cab + (
+                f"\n[{INK_DIM}]Nada aqui — nenhum email foi auto-enviado pra\n"
+                f"lixeira ainda (blocklist/keyword/list-unsubscribe decidem\n"
+                f"sozinhos, sem passar pela fila; a IA nunca entra nesse\n"
+                f"bypass).[/]"
+            )
+        itens = [Item(r) for r in rows]
+        mais_urgente = min(dias_restantes(it.processado_em) or 0 for it in itens)
+        rodape = (
+            f"\n[{INK_DIM}]{len(itens)} email(s) · mais próximo expira em "
+            f"{mais_urgente}d · Enter para restaurar algum[/]"
+        )
+        return cab + "\n".join(self._linhas_emails(itens)) + rodape
 
     def _det_add_rule(self) -> str:
         n = self.app.stats.rules_count
@@ -446,6 +491,10 @@ class HubScreen(Screen):
             from apolo.ui.swipe_screen import SwipeScreen
 
             self.app.push_screen(SwipeScreen(), self._apos_listagem)
+        elif key == "ruido":
+            from apolo.ui.ruido_screen import RuidoScreen
+
+            self.app.push_screen(RuidoScreen(), lambda _=None: self._atualizar())
         elif key == "add_rule":
             from apolo.ui.rules_screen import AddRuleModal
 

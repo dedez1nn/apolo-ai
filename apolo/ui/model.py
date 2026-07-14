@@ -81,6 +81,9 @@ class Item:
         # True enquanto aguarda o Ollama (sincronização ao vivo) — não é uma
         # ação de despacho, só um estado transitório de exibição.
         self.analisando = False
+        # Só preenchido pra despachados (ex.: tela "Emails de ruído") — quando
+        # o email saiu da fila de verdade, pra calcular o prazo de expiração.
+        self.processado_em = row["processado_em"] if "processado_em" in row.keys() else None
 
     @classmethod
     def from_sync(cls, s, *, acao: str) -> "Item":

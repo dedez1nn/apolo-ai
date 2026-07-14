@@ -146,6 +146,7 @@ class QueueScreen(Screen):
         self._sync_conta: str | None = None
         self._sync_encontrados = 0
         self._sync_analisando = 0
+        self._sync_auto_lixeira = 0
         self._sync_rows: dict[tuple, EmailRow] = {}
         self.query_one("#q-list", ListView).focus()
         self._aplicar_filtro()
@@ -203,7 +204,8 @@ class QueueScreen(Screen):
         sync_alvo = f" {self._sync_conta}" if self._sync_conta else ""
         sync_txt = (
             f"    [{AMBER}](⇄ sincronizando{sync_alvo}… {self._sync_encontrados} encontrado(s)"
-            f"{f', {self._sync_analisando} analisando' if self._sync_analisando else ''})[/]"
+            f"{f', {self._sync_analisando} analisando' if self._sync_analisando else ''}"
+            f"{f', {self._sync_auto_lixeira} auto→lixeira' if self._sync_auto_lixeira else ''})[/]"
             if self._sync_ativo
             else ""
         )
@@ -341,6 +343,7 @@ class QueueScreen(Screen):
         self._sync_conta = conta
         self._sync_encontrados = 0
         self._sync_analisando = 0
+        self._sync_auto_lixeira = 0
         self._render_header()
         rotulo = conta or "todas as contas"
         self._msg(f"[{AMBER}]sincronizando {rotulo} em segundo plano…[/]")
@@ -394,6 +397,9 @@ class QueueScreen(Screen):
                 row.set_classes(f"email-row v-{item.status}")
                 row.refresh_text()
             self._render_header()
+        elif kind == "auto_lixeira":
+            self._sync_auto_lixeira += kwargs.get("quantidade", 0)
+            self._render_header()
         elif kind == "erro":
             self.app.notify(mesc(f"[{kwargs.get('conta')}] {kwargs.get('msg')}"), severity="warning", title="sincronizar")
         elif kind == "erro_fatal":
@@ -402,7 +408,13 @@ class QueueScreen(Screen):
             self._render_header()
         elif kind == "fim":
             self._sync_ativo = False
-            self._msg(f"[{AMBER}]sincronização concluída — {self._sync_encontrados} novo(s)[/]")
+            auto_txt = f", {self._sync_auto_lixeira} auto→lixeira" if self._sync_auto_lixeira else ""
+            self._msg(f"[{AMBER}]sincronização concluída — {self._sync_encontrados} novo(s){auto_txt}[/]")
+            if self._sync_auto_lixeira:
+                self.app.notify(
+                    f"{self._sync_auto_lixeira} email(s) movido(s) automaticamente pra lixeira.",
+                    title="apolo",
+                )
             self._render_header()
 
     def _inserir_item_sync(self, it: Item) -> None:

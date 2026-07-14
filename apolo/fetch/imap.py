@@ -347,6 +347,33 @@ class BridgeClient:
         raw_ids = data[0].split() if data and data[0] else []
         return {int(x) for x in raw_ids}
 
+    def restore_from_trash(self, trash_folder: str, message_id: str | None, pasta_origem: str) -> bool:
+        """Restaura da lixeira pra `pasta_origem`, buscando pelo Message-ID.
+
+        `copy_to_bulk` não guarda o UID que a mensagem ganhou na pasta de
+        destino (só o UID de origem, já expurgado) — então a única forma de
+        achar de volta é buscar pelo header. Devolve False se não achar
+        (Message-ID ausente, ambíguo ou a mensagem já foi apagada de vez);
+        usado por `apolo.actions.restaurar_email` pra desfazer um auto-envio.
+        """
+        assert self._imap is not None
+        if not message_id or not message_id.strip():
+            return False
+        typ, _ = self._imap.select(trash_folder, readonly=False)
+        if typ != "OK":
+            raise RuntimeError(f"não consegui selecionar {trash_folder!r}")
+        criterio = f'(HEADER "Message-ID" "{message_id.strip()}")'
+        typ, data = self._imap.uid("SEARCH", None, criterio)
+        if typ != "OK" or not data or not data[0]:
+            return False
+        uids = [int(x) for x in data[0].split()]
+        uid = uids[-1]  # o mais recente, se por acaso houver mais de um resultado
+        ok = self.copy_to_bulk(trash_folder, [uid], pasta_origem)
+        if uid not in ok:
+            return False
+        self.expunge(trash_folder)
+        return True
+
     def fetch_message_from(self, pasta: str, uid: int) -> Message | None:
         """Seleciona a pasta (readonly) e busca a mensagem inteira (não marca lido).
 

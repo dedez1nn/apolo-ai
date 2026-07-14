@@ -18,11 +18,12 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+from apolo.actions import DispatchItem, dispatch_lixeira_gmail, dispatch_lixeira_imap
 from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import Config, load_accounts
 from apolo.fetch.imap import BridgeClient
-from apolo.rules.engine import RuleEngine, acao_efetiva, eh_recente
+from apolo.rules.engine import ACAO_LIXEIRA, RuleEngine, acao_efetiva, eh_recente
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 from apolo.verify import VerifyConfig, apply_ia_decision
 
@@ -80,7 +81,7 @@ def run_sync(
                     for pasta in config.folders:
                         _sync_imap_pasta(
                             store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event,
-                            ai_max_dias=config.ai_max_dias,
+                            ai_max_dias=config.ai_max_dias, trash_folder=config.trash_folder,
                         )
             except Exception as exc:
                 logger.exception("sync completo do Proton (pasta 'proton') falhou")
@@ -130,6 +131,7 @@ def run_sync(
                             store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event,
                             ai_max_dias=config.ai_max_dias,
                             conta=conta_id, pasta_db=f"{conta_id}:{pasta}",
+                            trash_folder=account.trash_folder, chunk_size=account.chunk_size,
                         )
             except Exception as exc:
                 logger.exception("sync completo de %s falhou", conta_id)
@@ -150,6 +152,7 @@ def _classificar_novo(engine, remetente, assunto, list_unsubscribe):
 def _sync_imap_pasta(
     store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event, *,
     ai_max_dias: int = 90, conta: str = "proton", pasta_db: str | None = None,
+    trash_folder: str = "Trash", chunk_size: int = 300,
 ) -> None:
     """Sync completo de uma pasta IMAP. `conta`/`pasta_db` default pro caso do
     Proton (sem namespace); contas IMAP adicionais passam `conta="imap:<nome>"`
@@ -162,6 +165,7 @@ def _sync_imap_pasta(
     on_event("found", conta=conta, pasta=pasta_db, total=len(novos_uids))
 
     residuo = []
+    auto_lixeira_itens: list[DispatchItem] = []
     falhas_seguidas = 0
     for uid in novos_uids:
         try:
@@ -191,6 +195,16 @@ def _sync_imap_pasta(
             status=novo_status, categoria=decisao.categoria,
             acao_sugerida=efetiva, regra_casada=decisao.regra_casada,
         )
+        if efetiva == ACAO_LIXEIRA:
+            # Cascata determinística já decidiu sozinha (o ramo 'default' nunca
+            # devolve lixeira — só 'revisar') — despacha direto, sem passar
+            # pela fila. A IA nunca entra nesse bypass: só decide dentro do
+            # resíduo, abaixo, e aquele caminho continua indo pra fila.
+            auto_lixeira_itens.append(DispatchItem(
+                pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
+                message_id=m.message_id, acao=ACAO_LIXEIRA, conta=conta,
+            ))
+            continue
         item = SyncItem(
             conta=conta, pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
             message_id=m.message_id,
@@ -225,6 +239,14 @@ def _sync_imap_pasta(
                 item.categoria = decisao_ia.categoria
             on_event("classificado", item)
 
+    if auto_lixeira_itens:
+        resultado = dispatch_lixeira_imap(
+            client, store, auto_lixeira_itens,
+            pasta_real=pasta, trash_folder=trash_folder, chunk_size=chunk_size, origem="auto",
+        )
+        if resultado.lixeira:
+            on_event("auto_lixeira", conta=conta, pasta=pasta_db, quantidade=resultado.lixeira)
+
     meta = store.get_folder_meta(pasta_db)
     prev_last_uid = meta[1] if meta else 0
     max_uid = max(uids, default=prev_last_uid)
@@ -252,6 +274,7 @@ def _sync_gmail_pasta(
     on_event("found", conta=conta_id, pasta=pasta, total=len(novos_ids))
 
     residuo = []
+    auto_lixeira_itens: list[DispatchItem] = []
     falhas_seguidas = 0
     for gid in novos_ids:
         try:
@@ -283,6 +306,14 @@ def _sync_gmail_pasta(
             status=novo_status, categoria=decisao.categoria,
             acao_sugerida=efetiva, regra_casada=decisao.regra_casada,
         )
+        if efetiva == ACAO_LIXEIRA:
+            # Mesmo bypass do IMAP (ver _sync_imap_pasta): cascata determinística
+            # decidiu sozinha — despacha direto, sem passar pela fila.
+            auto_lixeira_itens.append(DispatchItem(
+                pasta=pasta_db, uidvalidity=1, uid=m.uid, message_id=m.message_id,
+                acao=ACAO_LIXEIRA, conta=conta_id, provider_id=m.provider_id,
+            ))
+            continue
         item = SyncItem(
             conta=conta_id, pasta=pasta_db, uidvalidity=1, uid=m.uid,
             message_id=m.message_id, provider_id=m.provider_id,
@@ -315,6 +346,11 @@ def _sync_gmail_pasta(
                 item.status = decisao_ia.acao
                 item.categoria = decisao_ia.categoria
             on_event("classificado", item)
+
+    if auto_lixeira_itens:
+        resultado = dispatch_lixeira_gmail(client, store, auto_lixeira_itens, origem="auto")
+        if resultado.lixeira:
+            on_event("auto_lixeira", conta=conta_id, pasta=pasta_db, quantidade=resultado.lixeira)
 
     meta = store.get_folder_meta(pasta_db)
     prev_last_uid = meta[1] if meta else 0

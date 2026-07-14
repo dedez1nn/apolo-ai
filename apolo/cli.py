@@ -13,13 +13,14 @@ import sys
 import tomllib
 from pathlib import Path
 
+from apolo.actions import DispatchItem, dispatch_lixeira_gmail, dispatch_lixeira_imap
 from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import AccountConfig, Config, load_accounts
 from apolo.fetch.imap import BridgeClient
 from apolo.logging_setup import current_log_path
 from apolo.notify import notify
-from apolo.rules.engine import RuleEngine, acao_efetiva, eh_recente
+from apolo.rules.engine import ACAO_LIXEIRA, RuleEngine, acao_efetiva, eh_recente
 from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 from apolo.verify import VerifyConfig, apply_ia_decision
@@ -35,8 +36,8 @@ def _gmail_run(
     ollama: OllamaClient,
     ai_ready: bool,
     verify_config: VerifyConfig,
-) -> tuple[int, int, int, int, dict]:
-    """Roda fetch+classifica pra uma conta Gmail. Retorna (total_novos, analisados, revisar, preservados, acoes)."""
+) -> tuple[int, int, int, int, dict, int]:
+    """Roda fetch+classifica pra uma conta Gmail. Retorna (total_novos, analisados, revisar, preservados, acoes, auto_lixeira)."""
     from apolo.fetch.gmail import GmailClient
 
     conta_id = f"gmail:{account.name}"
@@ -51,9 +52,9 @@ def _gmail_run(
 
     if not client.is_authorized():
         print(f"[{conta_id}] conta não autorizada — execute: apolo accounts add --name {account.name}")
-        return 0, 0, 0, 0, {}
+        return 0, 0, 0, 0, {}, 0
 
-    total_novos = analisados = revisar = preservados = 0
+    total_novos = analisados = revisar = preservados = auto_lixeira = 0
     acoes: dict[str, int] = {}
 
     for pasta in account.folders:
@@ -74,6 +75,7 @@ def _gmail_run(
 
         novos_pasta = 0
         residuo = []
+        auto_lixeira_itens: list[DispatchItem] = []
 
         for m in result.novos:
             if store.insert_email(
@@ -93,11 +95,13 @@ def _gmail_run(
             # re-enfileira.
             mid = (m.message_id or "").strip()
             if mid and mid in decididos:
+                acao_prev, origem_prev = decididos[mid]
                 store.mark_dispatched(
                     pasta=pasta_db,
                     uidvalidity=result.uidvalidity,
                     uid=m.uid,
-                    acao_aplicada=decididos[mid] or "manter",
+                    acao_aplicada=acao_prev or "manter",
+                    origem=origem_prev,
                 )
                 preservados += 1
                 continue
@@ -109,8 +113,6 @@ def _gmail_run(
             )
             novo_status = STATUS_AGUARDANDO if decisao.precisa_revisao else STATUS_CLASSIFICADO
             analisados += 1
-            if novo_status == STATUS_AGUARDANDO:
-                revisar += 1
             recente = eh_recente(m.data, config.ai_max_dias)
             efetiva = acao_efetiva(decisao, ai_ready, recente)
             store.classify_email(
@@ -123,12 +125,29 @@ def _gmail_run(
                 regra_casada=decisao.regra_casada,
             )
             acoes[efetiva] = acoes.get(efetiva, 0) + 1
+            if efetiva == ACAO_LIXEIRA:
+                # Cascata determinística já decidiu sozinha — despacha direto,
+                # sem passar pela fila (ver apolo.sync pro mesmo bypass no
+                # "Sincronizar" da UI).
+                auto_lixeira_itens.append(DispatchItem(
+                    pasta=pasta_db, uidvalidity=result.uidvalidity, uid=m.uid,
+                    message_id=m.message_id, acao=ACAO_LIXEIRA, conta=conta_id, provider_id=m.provider_id,
+                ))
+                continue
+            if novo_status == STATUS_AGUARDANDO:
+                revisar += 1
             if decisao.regra_casada == "default" and recente:
                 residuo.append(m)
 
         if ai_ready and residuo:
             n_ia = _ai_pass_gmail(client, store, ollama, verify_config, pasta_db, result.uidvalidity, residuo)
             print(f"[{conta_id}/{pasta}] IA classificou {n_ia}/{len(residuo)} do resíduo.")
+
+        if auto_lixeira_itens:
+            resultado = dispatch_lixeira_gmail(client, store, auto_lixeira_itens, origem="auto")
+            auto_lixeira += resultado.lixeira
+            if resultado.lixeira:
+                print(f"[{conta_id}/{pasta}] {resultado.lixeira} email(s) movido(s) automaticamente pra lixeira.")
 
         # Reconciliação: pendentes que já saíram da INBOX por fora do Apolo
         # (lixeira/arquivado direto no Gmail) saem da fila aqui. Pulado num
@@ -150,7 +169,7 @@ def _gmail_run(
         total_novos += novos_pasta
         print(f"[{conta_id}/{pasta}] {novos_pasta} novo(s) (historyId={result.ultimo_uid}).")
 
-    return total_novos, analisados, revisar, preservados, acoes
+    return total_novos, analisados, revisar, preservados, acoes, auto_lixeira
 
 
 def _imap_account_run(
@@ -161,7 +180,7 @@ def _imap_account_run(
     ollama: OllamaClient,
     ai_ready: bool,
     verify_config: VerifyConfig,
-) -> tuple[int, int, int, int, dict]:
+) -> tuple[int, int, int, int, dict, int]:
     """Roda fetch+classifica incremental pra uma conta IMAP adicional (ex.:
     Outlook). Mesma lógica do bloco Proton em `cmd_run`, mas com login e
     pastas namespaced por conta — ver `_sync_imap_pasta` em apolo.sync pro
@@ -172,9 +191,9 @@ def _imap_account_run(
     senha = secrets.lookup_account_password(conta_id)
     if not (account.host and account.username and senha):
         print(f"[{conta_id}] credenciais incompletas — configure via: apolo accounts add --provider imap --name {account.name} …")
-        return 0, 0, 0, 0, {}
+        return 0, 0, 0, 0, {}, 0
 
-    total_novos = analisados = revisar = preservados = 0
+    total_novos = analisados = revisar = preservados = auto_lixeira = 0
     acoes: dict[str, int] = {}
 
     with BridgeClient(account.host, account.port, account.security) as client:
@@ -195,6 +214,7 @@ def _imap_account_run(
 
             novos_pasta = 0
             residuo = []
+            auto_lixeira_itens: list[DispatchItem] = []
             for m in result.novos:
                 if store.insert_email(
                     conta=conta_id, pasta=pasta_db, uidvalidity=result.uidvalidity, uid=m.uid,
@@ -204,9 +224,10 @@ def _imap_account_run(
 
                 mid = (m.message_id or "").strip()
                 if mid and mid in decididos:
+                    acao_prev, origem_prev = decididos[mid]
                     store.mark_dispatched(
                         pasta=pasta_db, uidvalidity=result.uidvalidity, uid=m.uid,
-                        acao_aplicada=decididos[mid] or "manter",
+                        acao_aplicada=acao_prev or "manter", origem=origem_prev,
                     )
                     preservados += 1
                     continue
@@ -216,8 +237,6 @@ def _imap_account_run(
                 )
                 novo_status = STATUS_AGUARDANDO if decisao.precisa_revisao else STATUS_CLASSIFICADO
                 analisados += 1
-                if novo_status == STATUS_AGUARDANDO:
-                    revisar += 1
                 recente = eh_recente(m.data, config.ai_max_dias)
                 efetiva = acao_efetiva(decisao, ai_ready, recente)
                 store.classify_email(
@@ -226,12 +245,32 @@ def _imap_account_run(
                     acao_sugerida=efetiva, regra_casada=decisao.regra_casada,
                 )
                 acoes[efetiva] = acoes.get(efetiva, 0) + 1
+                if efetiva == ACAO_LIXEIRA:
+                    # Cascata determinística já decidiu sozinha — despacha
+                    # direto, sem passar pela fila.
+                    auto_lixeira_itens.append(DispatchItem(
+                        pasta=pasta_db, uidvalidity=result.uidvalidity, uid=m.uid,
+                        message_id=m.message_id, acao=ACAO_LIXEIRA, conta=conta_id,
+                    ))
+                    continue
+                if novo_status == STATUS_AGUARDANDO:
+                    revisar += 1
                 if decisao.regra_casada == "default" and recente:
                     residuo.append(m)
 
             if ai_ready and residuo:
                 n_ia = _ai_pass(client, store, ollama, verify_config, pasta_db, result.uidvalidity, residuo)
                 print(f"[{conta_id}/{pasta}] IA classificou {n_ia}/{len(residuo)} do resíduo.")
+
+            if auto_lixeira_itens:
+                resultado = dispatch_lixeira_imap(
+                    client, store, auto_lixeira_itens,
+                    pasta_real=pasta, trash_folder=account.trash_folder, chunk_size=account.chunk_size,
+                    origem="auto",
+                )
+                auto_lixeira += resultado.lixeira
+                if resultado.lixeira:
+                    print(f"[{conta_id}/{pasta}] {resultado.lixeira} email(s) movido(s) automaticamente pra lixeira.")
 
             if not result.resynced:
                 removidos = _reconciliar_imap(client, store, pasta_db, pasta)
@@ -242,7 +281,7 @@ def _imap_account_run(
             total_novos += novos_pasta
             print(f"[{conta_id}/{pasta}] {novos_pasta} novo(s) (UID até {result.ultimo_uid}).")
 
-    return total_novos, analisados, revisar, preservados, acoes
+    return total_novos, analisados, revisar, preservados, acoes, auto_lixeira
 
 
 def _ai_pass_gmail(gmail_client, store, ollama, verify_config, pasta_db, uidvalidity, residuo) -> int:
@@ -477,6 +516,7 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
     revisar = 0  # foram pra fila (aguardando)
     mantidos = 0  # terminaram como 'classificado' (sem ação)
     preservados = 0  # já decididos antes; carregados sem voltar pra fila (resync)
+    auto_lixeira = 0  # cascata determinística decidiu lixeira sozinha — não passou pela fila
     fila_total = 0
     acoes: dict[str, int] = {}
     with Storage(config.db_path) as store:
@@ -506,6 +546,7 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
 
                 novos_pasta = 0
                 residuo = []  # emails que a cascata não resolveu (vão pra IA)
+                auto_lixeira_itens: list[DispatchItem] = []
                 for m in result.novos:
                     if store.insert_email(
                         pasta=pasta,
@@ -522,11 +563,13 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                     # message_id): re-grava como despachado e NÃO re-enfileira.
                     mid = (m.message_id or "").strip()
                     if mid and mid in decididos:
+                        acao_prev, origem_prev = decididos[mid]
                         store.mark_dispatched(
                             pasta=pasta,
                             uidvalidity=result.uidvalidity,
                             uid=m.uid,
-                            acao_aplicada=decididos[mid] or "manter",
+                            acao_aplicada=acao_prev or "manter",
+                            origem=origem_prev,
                         )
                         preservados += 1
                         continue
@@ -542,10 +585,6 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                         STATUS_AGUARDANDO if decisao.precisa_revisao else STATUS_CLASSIFICADO
                     )
                     analisados += 1
-                    if novo_status == STATUS_AGUARDANDO:
-                        revisar += 1
-                    else:
-                        mantidos += 1
                     recente = eh_recente(m.data, config.ai_max_dias)
                     efetiva = acao_efetiva(decisao, ai_ready, recente)
                     store.classify_email(
@@ -558,6 +597,19 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                         regra_casada=decisao.regra_casada,
                     )
                     acoes[efetiva] = acoes.get(efetiva, 0) + 1
+                    if efetiva == ACAO_LIXEIRA:
+                        # Cascata determinística já decidiu sozinha — despacha
+                        # direto, sem passar pela fila (ver apolo.sync pro
+                        # mesmo bypass no "Sincronizar" da UI).
+                        auto_lixeira_itens.append(DispatchItem(
+                            pasta=pasta, uidvalidity=result.uidvalidity, uid=m.uid,
+                            message_id=m.message_id, acao=ACAO_LIXEIRA, conta="proton",
+                        ))
+                        continue
+                    if novo_status == STATUS_AGUARDANDO:
+                        revisar += 1
+                    else:
+                        mantidos += 1
                     if decisao.regra_casada == "default" and recente:
                         residuo.append(m)
 
@@ -566,6 +618,15 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                 if ai_ready and residuo:
                     n_ia = _ai_pass(client, store, ollama, verify_config, pasta, result.uidvalidity, residuo)
                     print(f"[{pasta}] IA classificou {n_ia}/{len(residuo)} do resíduo.")
+
+                if auto_lixeira_itens:
+                    resultado = dispatch_lixeira_imap(
+                        client, store, auto_lixeira_itens, pasta_real=pasta, trash_folder=config.trash_folder,
+                        origem="auto",
+                    )
+                    auto_lixeira += resultado.lixeira
+                    if resultado.lixeira:
+                        print(f"[{pasta}] {resultado.lixeira} email(s) movido(s) automaticamente pra lixeira.")
 
                 # Reconciliação: o que ainda está pendente no banco mas já saiu
                 # da pasta de origem (lixeira/movido por fora do Apolo) sai da
@@ -583,11 +644,12 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
         # Contas Gmail adicionais (mesma conexão)
         gmail_accounts = [a for a in load_accounts(config.accounts_path) if a.provider == "gmail"]
         for account in gmail_accounts:
-            gn, ga, gr, gp, gacoes = _gmail_run(config, account, store, engine, ollama, ai_ready, verify_config)
+            gn, ga, gr, gp, gacoes, gal = _gmail_run(config, account, store, engine, ollama, ai_ready, verify_config)
             total_novos += gn
             analisados += ga
             revisar += gr
             preservados += gp
+            auto_lixeira += gal
             for k, v in gacoes.items():
                 acoes[k] = acoes.get(k, 0) + v
 
@@ -595,7 +657,7 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
         imap_accounts = [a for a in load_accounts(config.accounts_path) if a.provider == "imap"]
         for account in imap_accounts:
             try:
-                iN, iA, iR, iP, iacoes = _imap_account_run(config, account, store, engine, ollama, ai_ready, verify_config)
+                iN, iA, iR, iP, iacoes, iAl = _imap_account_run(config, account, store, engine, ollama, ai_ready, verify_config)
             except Exception as e:
                 logger.exception("sync incremental de imap:%s falhou", account.name)
                 print(f"[imap:{account.name}] erro: {e}")
@@ -604,6 +666,7 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
             analisados += iA
             revisar += iR
             preservados += iP
+            auto_lixeira += iAl
             for k, v in iacoes.items():
                 acoes[k] = acoes.get(k, 0) + v
 
@@ -630,14 +693,16 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
     if acoes:
         resumo = ", ".join(f"{n} {acao}" for acao, n in sorted(acoes.items()))
         print(f"Sugestões da cascata: {resumo}.")
+    if auto_lixeira:
+        print(f"{auto_lixeira} email(s) movido(s) automaticamente pra lixeira (blocklist/keyword/list-unsubscribe).")
 
     if notify_enabled:
-        _notify_resumo(analisados, mantidos, revisar, fila_total, replace_id=nid)
+        _notify_resumo(analisados, mantidos, revisar, fila_total, auto_lixeira, replace_id=nid)
     return 0
 
 
 def _notify_resumo(
-    analisados: int, mantidos: int, revisar: int, fila_total: int, *, replace_id: int | None
+    analisados: int, mantidos: int, revisar: int, fila_total: int, auto_lixeira: int, *, replace_id: int | None
 ) -> None:
     """Substitui a notificação de "analisando…" pelo resumo da passada.
 
@@ -655,7 +720,10 @@ def _notify_resumo(
         )
         return
     titulo = f"Apolo: {analisados} analisado(s)"
-    corpo = f"{mantidos} mantido(s), {revisar} pra revisar · fila: {fila_total}."
+    corpo = f"{mantidos} mantido(s), {revisar} pra revisar"
+    if auto_lixeira:
+        corpo += f", {auto_lixeira} auto→lixeira"
+    corpo += f" · fila: {fila_total}."
     notify(
         titulo,
         corpo,
