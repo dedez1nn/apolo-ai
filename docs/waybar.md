@@ -77,7 +77,8 @@ O `format` é um espaço — o ícone em si vem do `background-image` no CSS.
 
 ```css
 #custom-apolo {
-    background-image: url("/home/andrelmi/.config/waybar/apolo.png");
+    /* GTK CSS não expande ~/$HOME em url() — use o caminho absoluto real */
+    background-image: url("/home/<seu-usuario>/.config/waybar/apolo.png");
     background-repeat: no-repeat;
     background-position: center;
     background-size: 20px 20px;
