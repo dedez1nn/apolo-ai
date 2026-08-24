@@ -70,6 +70,10 @@ class ApoloApp(App):
         # conta_id ("gmail:<nome>") -> motivo. Preenchido pela checagem de token
         # na abertura; o sincronizar (S) pula essas contas até reautorizar.
         self.contas_invalidas: dict[str, str] = {}
+        # Identidade (conta, pasta, uidvalidity, uid) do último email selecionado
+        # na fila/swipe — permite retomar na mesma posição ao reentrar na tela.
+        self.last_queue_key: tuple | None = None
+        self.last_swipe_key: tuple | None = None
 
     def on_mount(self) -> None:
         self.push_screen(HubScreen())

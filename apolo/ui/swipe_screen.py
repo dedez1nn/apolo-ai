@@ -144,9 +144,26 @@ class SwipeScreen(Screen):
         # (item, ação_anterior, rule_undo) por decisão — pra reverter no cancelar.
         self.hist: list[tuple] = []
         self._fila: list[Item] = list(self.app.queue)
+        self._retomar_posicao()
         self._carta: SwipeCard | None = None
         self._render_header()
         self._proxima_carta()
+
+    @staticmethod
+    def _chave_item(it: Item) -> tuple:
+        return (it.conta, it.pasta, it.uidvalidity, it.uid)
+
+    def _retomar_posicao(self) -> None:
+        """Se a última carta vista numa sessão anterior ainda está na fila,
+        gira a lista pra retomar dali em vez de começar sempre do topo."""
+        chave = getattr(self.app, "last_swipe_key", None)
+        if chave is None:
+            return
+        for i, it in enumerate(self._fila):
+            if self._chave_item(it) == chave:
+                if i:
+                    self._fila = self._fila[i:] + self._fila[:i]
+                break
 
     # ----- helpers -----
     @property
@@ -173,8 +190,10 @@ class SwipeScreen(Screen):
     def _proxima_carta(self) -> None:
         if not self._fila:
             self._carta = None
+            self.app.last_swipe_key = None
             self._msg(f"[{AMBER}]fila terminada — ↵ aplica, Q cancela[/]")
             return
+        self.app.last_swipe_key = self._chave_item(self._fila[0])
         card = SwipeCard(self._fila[0])
         self._stage.mount(card)
         card.styles.opacity = 0.0

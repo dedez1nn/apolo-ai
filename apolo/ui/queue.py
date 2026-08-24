@@ -185,8 +185,22 @@ class QueueScreen(Screen):
         for it in self._exibidos:
             lv.append(EmailRow(it, mostrar_badge=badge))
         if self._exibidos:
-            lv.index = min(manter_idx, len(self._exibidos) - 1) if manter_idx is not None else 0
+            if manter_idx is not None:
+                lv.index = min(manter_idx, len(self._exibidos) - 1)
+            else:
+                lv.index = self._idx_lembrado()
         self._render_header()
+
+    def _idx_lembrado(self) -> int:
+        """Onde estava o cursor da última vez que essa fila foi vista (por
+        identidade do email, não pelo índice bruto — que muda conforme a fila
+        encolhe/cresce entre uma visita e outra)."""
+        chave = getattr(self.app, "last_queue_key", None)
+        if chave is not None:
+            for i, it in enumerate(self._exibidos):
+                if self._chave_item(it) == chave:
+                    return i
+        return 0
 
     def _render_header(self) -> None:
         n = len(self._exibidos)
@@ -216,6 +230,18 @@ class QueueScreen(Screen):
 
     def _idx(self) -> int | None:
         return self._list.index
+
+    @staticmethod
+    def _chave_item(it: Item) -> tuple:
+        return (it.conta, it.pasta, it.uidvalidity, it.uid)
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        # Lembra qual email está selecionado (por identidade, não por índice
+        # bruto) pra reentrar na mesma posição da próxima vez que a fila abrir.
+        if event.list_view.id != "q-list":
+            return
+        if isinstance(event.item, EmailRow):
+            self.app.last_queue_key = self._chave_item(event.item.item)
 
     # ----- decisões -----
     async def decidir(self, acao: str, rule_undo=None) -> None:
