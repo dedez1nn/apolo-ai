@@ -14,7 +14,7 @@ um SO novo) sem tocar em nada fora deste pacote.
 
 Estado dos backends por preocupação:
   - `Notifier`/`Clipboard`/`SecretStore`: Linux, Windows e macOS —
-    `_familia()` escolhe. `SecretStore` em Windows/macOS usa `keyring` (PyPI,
+    `familia_do_sistema()` escolhe. `SecretStore` em Windows/macOS usa `keyring` (PyPI,
     dependência opcional — só importada se um dos dois backends for de fato
     escolhido; ver `apolo/platform/_keyring.py`); no Linux continua sendo
     `pass` + chave GPG dedicada, de propósito (ver docs/secrets.md).
@@ -36,9 +36,11 @@ from apolo.platform.scheduler import Scheduler
 from apolo.platform.secret_store import SecretStore
 
 
-def _familia() -> str:
+def familia_do_sistema() -> str:
     """'linux', 'darwin' ou 'win32' — as três famílias que `sys.platform` cobre
-    na prática (variantes tipo 'linux2' já não existem no Python 3 atual)."""
+    na prática (variantes tipo 'linux2' já não existem no Python 3 atual).
+    Pública porque `cli.py` também usa pra decidir se `apolo setup` faz
+    sentido nesse SO (ver `cmd_setup`)."""
     if sys.platform.startswith("linux"):
         return "linux"
     if sys.platform == "darwin":
@@ -49,7 +51,7 @@ def _familia() -> str:
 
 
 def get_notifier() -> Notifier:
-    familia = _familia()
+    familia = familia_do_sistema()
     if familia == "win32":
         from apolo.platform.win32.notifier import Win32Notifier
 
@@ -70,7 +72,7 @@ def get_scheduler() -> Scheduler:
 
 
 def get_secret_store() -> SecretStore:
-    familia = _familia()
+    familia = familia_do_sistema()
     if familia == "win32":
         from apolo.platform.win32.secret_store import Win32SecretStore
 
@@ -85,7 +87,7 @@ def get_secret_store() -> SecretStore:
 
 
 def get_clipboard() -> Clipboard:
-    familia = _familia()
+    familia = familia_do_sistema()
     if familia == "win32":
         from apolo.platform.win32.clipboard import Win32Clipboard
 

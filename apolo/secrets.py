@@ -17,6 +17,12 @@ def disponivel() -> bool:
     return get_secret_store().disponivel()
 
 
+def motivo_indisponivel() -> str | None:
+    """Por que `disponivel()` é False agora, em texto curto pro dono ler.
+    None se `disponivel()` é True — nada a explicar."""
+    return get_secret_store().motivo_indisponivel()
+
+
 def store_password(value: str) -> bool:
     """Grava a senha do Bridge. Devolve True no sucesso, False se não deu."""
     return get_secret_store().store_password(value)

@@ -116,3 +116,24 @@ killall waybar && waybar & disown
   Waybar), não do CSS — GTK3 não suporta `backdrop-filter`.
 - Esses arquivos são restaurados pelo `copy.sh` do JaKooLit; ao reinstalar os
   dotfiles, reaplicar os passos acima.
+
+## O que isso é, na verdade
+
+Esse módulo é só um **launcher**: um ícone que abre um terminal rodando
+`apolo review` (a TUI, em `apolo/ui/`). Nada disso mora no repositório — é
+puramente dotfiles do Hyprland/Waybar deste sistema. A TUI em si não sabe o
+que é Waybar; roda igual em qualquer terminal, de qualquer SO.
+
+Um equivalente noutro ambiente é a mesma ideia com outra casca — nenhum deles
+precisa ser construído pra usar o Apolo, só ajuda a lembrar que a fila tem
+algo esperando:
+
+- **Windows:** um ícone na bandeja do sistema via
+  [`pystray`](https://pypi.org/project/pystray/), cujo clique roda
+  `python -m apolo.cli review` num terminal.
+- **macOS:** um item na barra de menu via
+  [`rumps`](https://pypi.org/project/rumps/), mesma ideia.
+- **Qualquer SO, sem instalar nada:** um alias de shell (`alias apolo-review='python
+  -m apolo.cli review'`) ou atalho de teclado do próprio ambiente — dá menos
+  destaque visual, mas cobre o mesmo caso de uso (abrir a fila com um comando
+  rápido) sem depender de nenhuma dependência nova.

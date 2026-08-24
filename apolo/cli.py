@@ -1096,11 +1096,8 @@ def cmd_accounts_add(
         from apolo import secrets
 
         if not secrets.disponivel():
-            print(
-                "aviso: keyring (pass/gpg) indisponível — a senha "
-                "não pode ser guardada. Confira se `pass` está instalado e se "
-                "~/.password-store/apolo/.gpg-id existe."
-            )
+            motivo = secrets.motivo_indisponivel() or "cofre de senha indisponível"
+            print(f"aviso: {motivo} — a senha não pode ser guardada.")
             return 0
         senha = getpass.getpass(f"Senha (ou senha de app) para {username}: ")
         if senha and secrets.store_account_password(f"imap:{name}", senha):
@@ -1221,7 +1218,27 @@ def cmd_setup(config: Config, interval: str, enable: bool = True) -> int:
     Detecta o interpretador e a raiz do projeto na hora, então a instalação não
     depende de venv nem de caminho chumbado. Reentrante: rodar de novo regrava as
     units (útil pra trocar o intervalo) e recarrega o systemd.
+
+    Só existe no Linux (systemd) — noutro SO nem tenta escrever unit nenhuma,
+    aponta direto pro agendamento embutido (`apolo run --loop`), que funciona
+    em qualquer sistema operacional.
     """
+    from apolo.platform import familia_do_sistema
+
+    familia = familia_do_sistema()
+    if familia != "linux":
+        nome_so = {"win32": "Windows", "darwin": "macOS"}.get(familia, "este sistema")
+        print(f"'apolo setup' instala um timer do systemd, que só existe no Linux.")
+        print(f"Em {nome_so}, use o agendamento embutido, que roda em qualquer SO:")
+        print(f"  python -m apolo.cli run --loop --interval {interval}")
+        if familia == "win32":
+            print("Pra virar um serviço de verdade (sobrevive a logout/reboot), agende esse")
+            print("comando no Agendador de Tarefas do Windows (Task Scheduler).")
+        elif familia == "darwin":
+            print("Pra virar um serviço de verdade (sobrevive a logout/reboot), crie um")
+            print("LaunchAgent (launchd) chamando esse comando.")
+        return 0
+
     from apolo import scheduler
 
     for destino in scheduler.escrever_units(interval):

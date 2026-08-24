@@ -190,7 +190,7 @@ class SettingsScreen(Screen):
             if secrets.store_password(novo["senha"]):
                 feitos.append("senha → pass")
             else:
-                erros.append("senha: pass indisponível (chave apolo/ ausente?)")
+                erros.append(f"senha: {secrets.motivo_indisponivel() or 'cofre de senha indisponível'}")
 
         # 2b. Usuário do Bridge + IA -> .env (preserva o resto). A senha NÃO vai
         # pro .env — fica só no keyring.

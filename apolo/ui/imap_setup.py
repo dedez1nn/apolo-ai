@@ -149,10 +149,8 @@ class ImapSetupModal(ModalScreen):
         folders = self.query_one("#i-folders", Input).value.strip() or "INBOX"
 
         if not secrets.disponivel() and senha:
-            msg.update(
-                f"[{COR_LIXEIRA}]keyring (pass/gpg) indisponível — "
-                f"a senha não pode ser guardada.[/]"
-            )
+            motivo = secrets.motivo_indisponivel() or "cofre de senha indisponível"
+            msg.update(f"[{COR_LIXEIRA}]{mesc(motivo)} — a senha não pode ser guardada.[/]")
             return
 
         try:

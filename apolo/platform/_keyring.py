@@ -35,6 +35,19 @@ class KeyringSecretStore:
         except Exception:
             return False
 
+    def motivo_indisponivel(self) -> str | None:
+        try:
+            import keyring
+            import keyring.backends.fail
+        except ImportError:
+            return "pacote opcional 'keyring' não está instalado — rode: pip install keyring"
+        try:
+            if isinstance(keyring.get_keyring(), keyring.backends.fail.Keyring):
+                return "nenhum backend de cofre de senha do sistema foi encontrado (keyring sem backend utilizável)"
+        except Exception as e:
+            return f"keyring falhou ao inicializar: {type(e).__name__}: {e}"
+        return None
+
     def _set(self, username: str, value: str) -> bool:
         if not self.disponivel() or not value:
             return False

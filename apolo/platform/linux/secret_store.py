@@ -61,6 +61,16 @@ class LinuxSecretStore:
             return False
         return os.path.isfile(os.path.join(_store_dir(), "apolo", ".gpg-id"))
 
+    def motivo_indisponivel(self) -> str | None:
+        if self.disponivel():
+            return None
+        if shutil.which("pass") is None:
+            return "'pass' não está instalado (pacote 'pass', o standard unix password manager)"
+        return (
+            f"'pass' está instalado, mas falta a chave dedicada em "
+            f"{os.path.join(_store_dir(), 'apolo', '.gpg-id')} — ver docs/secrets.md"
+        )
+
     def _pass_insert(self, path: str, value: str) -> bool:
         """Grava `value` na entrada `path`, sobrescrevendo se já existir.
 

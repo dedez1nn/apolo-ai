@@ -8,6 +8,7 @@ Contas adicionais (Gmail, Outlook) ficam em accounts.toml; veja AccountConfig.
 """
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,14 +37,39 @@ def _xdg_data() -> str:
     return os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
 
 
+def _xdg_config() -> str:
+    return os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+
+
 def _default_db_path() -> Path:
     """~/.local/share/apolo/apolo.db, respeitando XDG_DATA_HOME."""
     return Path(_xdg_data()) / "apolo" / "apolo.db"
 
 
-def _default_rules_path() -> Path:
-    """As regras vivem junto do pacote, em apolo/rules/config.toml."""
+def _legacy_rules_path() -> Path:
+    """Onde as regras viviam antes de sair do pacote — só serve de origem pra
+    semear/migrar na primeira execução com o layout novo (ver
+    `_default_rules_path`)."""
     return Path(__file__).resolve().parent / "rules" / "config.toml"
+
+
+def _default_rules_path() -> Path:
+    """~/.config/apolo/rules.toml, respeitando XDG_CONFIG_HOME.
+
+    Regra é dado do dono, não código — não devia morar dentro do pacote
+    instalado (quebra num `pip install`/instalação sem permissão de escrita,
+    ou numa máquina com vários usuários). Na primeira vez que roda com esse
+    caminho ainda inexistente, semeia a partir do que já existir em
+    `_legacy_rules_path()` — preserva regras que o dono já tinha customizado
+    ali, e some sozinho depois que a migração acontecer uma vez.
+    """
+    destino = Path(_xdg_config()) / "apolo" / "rules.toml"
+    if not destino.is_file():
+        origem = _legacy_rules_path()
+        if origem.is_file():
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(origem, destino)
+    return destino
 
 
 def _default_accounts_path() -> Path:

@@ -34,7 +34,7 @@ apolo/
   storage/db.py        # SQLite: emails + acoes (log p/ undo) + meta
   rules/engine.py      # cascata de precedência (passo 2)
   rules/writer.py      # leitura/escrita das regras no TOML (block/allow + unsubscribe)
-  rules/config.toml    # regras editáveis à mão
+  rules/config.toml    # regras de exemplo — semente copiada pro XDG no 1º uso (ver Config)
   systemd/             # templates apolo.service + apolo.timer (passo 5)
 ```
 
@@ -91,7 +91,7 @@ cp .env.example .env
 | `APOLO_IMAP_SECURITY` | `STARTTLS`                      | `STARTTLS` ou `PLAIN`                  |
 | `APOLO_FOLDERS`       | `INBOX`                         | pastas a vigiar (separadas por vírgula)|
 | `APOLO_DB_PATH`       | `~/.local/share/apolo/apolo.db` | caminho do banco de estado             |
-| `APOLO_RULES_PATH`    | `apolo/rules/config.toml`       | arquivo de regras                      |
+| `APOLO_RULES_PATH`    | `~/.config/apolo/rules.toml`    | arquivo de regras (semeado do repo no 1º uso) |
 | `APOLO_TRASH_FOLDER`  | `Trash`                         | pasta de lixeira do Proton             |
 | `APOLO_AI_ENABLED`    | `true`                          | liga/desliga a classificação por IA    |
 | `APOLO_OLLAMA_URL`    | `http://127.0.0.1:11434`        | endereço do Ollama                     |
@@ -166,8 +166,10 @@ casar decide** (`apolo/rules/engine.py`), tudo sem IA:
 6. **default** → sem confiança, vai pra fila de revisão.
 
 Domínio casa subdomínio (`loja-exemplo.com.br` pega `promo.loja-exemplo.com.br`). As regras
-ficam num TOML editável à mão — `apolo/rules/config.toml` (ou aponte outro com
-`APOLO_RULES_PATH`). "Adicionar uma fonte" = adicionar uma linha lá.
+ficam num TOML editável à mão — `~/.config/apolo/rules.toml` por padrão (ou
+aponte outro com `APOLO_RULES_PATH`); `apolo/rules/config.toml` no repo é só o
+exemplo, copiado pra lá no primeiro uso. "Adicionar uma fonte" = adicionar uma
+linha lá.
 
 **Tudo começa em modo sugestão.** Nada é apagado pela cascata: `manter` é decisão
 terminal e o resto entra na fila de revisão (`aguardando`) com a ação sugerida.

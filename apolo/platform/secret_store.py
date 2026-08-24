@@ -16,6 +16,12 @@ class SecretStore(Protocol):
         """True se este backend consegue guardar/ler segredo agora."""
         ...
 
+    def motivo_indisponivel(self) -> str | None:
+        """Por que `disponivel()` é False agora, em texto curto pro dono ler
+        (ex.: "'pass' não está instalado"). `None` se `disponivel()` é True —
+        nada a explicar."""
+        ...
+
     def store_password(self, value: str) -> bool:
         """Grava a senha do Bridge. True no sucesso."""
         ...
