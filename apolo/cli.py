@@ -23,7 +23,14 @@ from apolo.config import AccountConfig, Config, load_accounts
 from apolo.fetch.imap import BridgeClient
 from apolo.logging_setup import current_log_path
 from apolo.notify import notify
-from apolo.rules.engine import ACAO_LIXEIRA, ACAO_REVISAR, RuleEngine, acao_efetiva, eh_recente
+from apolo.rules.engine import (
+    ACAO_LIXEIRA,
+    ACAO_REVISAR,
+    RuleEngine,
+    acao_efetiva,
+    descartar_codigo_lido,
+    eh_recente,
+)
 from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 from apolo.sync import refresh_favoritos_gmail, refresh_favoritos_imap
@@ -120,6 +127,7 @@ def _gmail_run(
             analisados += 1
             recente = eh_recente(m.data, config.ai_max_dias)
             efetiva = acao_efetiva(decisao, ai_ready, recente)
+            efetiva = descartar_codigo_lido(decisao, efetiva, m.lido)
             if m.favorito and efetiva == ACAO_LIXEIRA:
                 # Favoritado no Gmail: nunca some sozinho pelo auto-envio —
                 # cai pra revisão manual, onde o dono vê o aviso antes de excluir.
@@ -260,6 +268,7 @@ def _imap_account_run(
                 analisados += 1
                 recente = eh_recente(m.data, config.ai_max_dias)
                 efetiva = acao_efetiva(decisao, ai_ready, recente)
+                efetiva = descartar_codigo_lido(decisao, efetiva, m.lido)
                 if m.favorito and efetiva == ACAO_LIXEIRA:
                     # Favoritado: nunca some sozinho pelo auto-envio — cai pra
                     # revisão manual, onde o dono vê o aviso antes de excluir.
@@ -616,6 +625,7 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                     analisados += 1
                     recente = eh_recente(m.data, config.ai_max_dias)
                     efetiva = acao_efetiva(decisao, ai_ready, recente)
+                    efetiva = descartar_codigo_lido(decisao, efetiva, m.lido)
                     if m.favorito and efetiva == ACAO_LIXEIRA:
                         # Favoritado: nunca some sozinho pelo auto-envio — cai
                         # pra revisão manual, onde o dono vê o aviso antes de excluir.

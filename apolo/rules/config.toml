@@ -54,14 +54,37 @@ padroes = [
   "logged in", "log in", "signed in", "sign-in", "sign in attempt",
   "login attempt", "new device", "new sign-in", "suspicious login",
   "security alert", "verify your identity", "password changed",
-  "password reset", "two-step", "two-factor", "2fa", "security code",
+  "password reset", "two-step", "two-factor", "2fa",
   # português
   "login realizado", "novo login", "tentativa de login", "tentativa de acesso",
   "novo acesso", "acesso não reconhecido", "acesso nao reconhecido",
   "dispositivo desconhecido", "alerta de segurança", "alerta de seguranca",
   "senha alterada", "verificação de segurança", "verificacao de seguranca",
+]
+
+# Emails cujo conteúdo inteiro é um código de uso único (login/verificação/
+# confirmação). Diferente de "alerta_login": aqui o email não tem mais valor
+# nenhum depois que o código foi usado — por isso, se já chegar marcado como
+# lido (\Seen no IMAP / sem o label UNREAD no Gmail), o sync manda direto pra
+# lixeira em vez de "manter" (ver rules.engine.descartar_codigo_lido).
+[[keywords]]
+nome = "codigo_verificacao"
+campo = "assunto"
+acao = "manter"
+padroes = [
+  # inglês
+  "verification code", "security code", "confirmation code",
+  "authentication code", "auth code", "login code", "access code",
+  "one-time code", "one time code", "one-time password", "single-use code",
+  "temporary code", "your code is", "your verification code", "otp",
+  "passcode",
+  # português
   "código de verificação", "codigo de verificacao",
   "código de segurança", "codigo de seguranca",
+  "código de confirmação", "codigo de confirmacao",
+  "código de acesso", "codigo de acesso",
+  "código de login", "codigo de login",
+  "código temporário", "codigo temporario",
 ]
 
 [[keywords]]

@@ -25,6 +25,10 @@ ACAO_REVISAR = "revisar"
 
 _ACOES_VALIDAS = {ACAO_MANTER, ACAO_LIXEIRA, ACAO_REVISAR}
 
+# Categoria do grupo [[keywords]] "codigo_verificacao" (config.toml) — usada por
+# `descartar_codigo_lido` pra saber se a categoria casada é "código de uso único".
+CATEGORIA_CODIGO_VERIFICACAO = "codigo_verificacao"
+
 # Pseudo-ação: nunca sai da cascata (TOML não pode configurar isso, por isso
 # fica fora de _ACOES_VALIDAS) — é o sync/cli que a atribui quando o resíduo
 # cai em 'default' e a IA está desligada. Sinaliza "ninguém decidiu nada"
@@ -189,6 +193,17 @@ def acao_efetiva(decisao: Decision, ai_ready: bool, recente: bool = True) -> str
     if decisao.regra_casada == "default" and not (ai_ready and recente):
         return ACAO_PENDENTE
     return decisao.acao_sugerida
+
+
+def descartar_codigo_lido(decisao: Decision, efetiva: str, lido: bool) -> str:
+    """Código de verificação já lido não tem mais valor — vira lixeira mesmo
+    quando a cascata sugeriu 'manter' (o dono já usou/viu o código antes do
+    Apolo sincronizar). Chame depois de `acao_efetiva` e antes da proteção de
+    favorito, pra um código favoritado ainda cair em revisão em vez de sumir.
+    """
+    if lido and decisao.categoria == CATEGORIA_CODIGO_VERIFICACAO and efetiva == ACAO_MANTER:
+        return ACAO_LIXEIRA
+    return efetiva
 
 
 def _get_list(rules: dict, secao: str, chave: str) -> list[str]:

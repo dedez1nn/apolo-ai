@@ -17,6 +17,7 @@ class FetchedEmail:
     list_unsubscribe: str       # header (vazio se ausente)
     provider_id: str | None = None  # Gmail message ID; None para IMAP
     favorito: bool = False      # \Flagged (IMAP) / label STARRED (Gmail)
+    lido: bool = False          # \Seen (IMAP) / ausência do label UNREAD (Gmail)
 
 
 @dataclass(frozen=True)

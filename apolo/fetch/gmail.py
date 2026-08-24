@@ -359,8 +359,9 @@ class GmailClient:
             list_unsubscribe=headers.get("list-unsubscribe", ""),
             provider_id=gmail_id,
             # labelIds vem de graça no recurso da mensagem (não é header) —
-            # STARRED é como o Gmail marca "favorito".
+            # STARRED é como o Gmail marca "favorito"; sem UNREAD é "lido".
             favorito="STARRED" in resp.get("labelIds", []),
+            lido="UNREAD" not in resp.get("labelIds", []),
         )
 
     def list_ids(self, pasta: str, limit: int) -> tuple[list[str], int]:

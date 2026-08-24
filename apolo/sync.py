@@ -23,7 +23,14 @@ from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import Config, load_accounts
 from apolo.fetch.imap import BridgeClient
-from apolo.rules.engine import ACAO_LIXEIRA, ACAO_REVISAR, RuleEngine, acao_efetiva, eh_recente
+from apolo.rules.engine import (
+    ACAO_LIXEIRA,
+    ACAO_REVISAR,
+    RuleEngine,
+    acao_efetiva,
+    descartar_codigo_lido,
+    eh_recente,
+)
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 from apolo.verify import VerifyConfig, apply_ia_decision
 
@@ -229,6 +236,7 @@ def _sync_imap_pasta(
         decisao, novo_status = _classificar_novo(engine, m.remetente, m.assunto, m.list_unsubscribe)
         recente = eh_recente(m.data, ai_max_dias)
         efetiva = acao_efetiva(decisao, ai_ready, recente)
+        efetiva = descartar_codigo_lido(decisao, efetiva, m.lido)
         if m.favorito and efetiva == ACAO_LIXEIRA:
             # Favoritado no Proton/Gmail: nunca some sozinho pelo auto-envio —
             # cai pra revisão manual, onde o dono vê o aviso antes de excluir.
@@ -349,6 +357,7 @@ def _sync_gmail_pasta(
         decisao, novo_status = _classificar_novo(engine, m.remetente, m.assunto, m.list_unsubscribe)
         recente = eh_recente(m.data, ai_max_dias)
         efetiva = acao_efetiva(decisao, ai_ready, recente)
+        efetiva = descartar_codigo_lido(decisao, efetiva, m.lido)
         if m.favorito and efetiva == ACAO_LIXEIRA:
             # Favoritado no Gmail: nunca some sozinho pelo auto-envio — cai
             # pra revisão manual, onde o dono vê o aviso antes de excluir.

@@ -438,4 +438,5 @@ class BridgeClient:
             # str() porque headers com codificação atípica podem vir como Header.
             list_unsubscribe=str(msg.get("List-Unsubscribe") or ""),
             favorito=b"\\Flagged" in data[0][0],
+            lido=b"\\Seen" in data[0][0],
         )
