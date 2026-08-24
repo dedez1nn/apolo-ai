@@ -10,14 +10,18 @@ O resto do código nunca importa daqui direto: `apolo/notify.py`,
 `apolo/ui/settings.py` continuam sendo a API pública estável, e por baixo
 delegam pra `get_notifier()`/`get_scheduler()`/`get_secret_store()`/
 `get_clipboard()` daqui. Isso é o único jeito de trocar o backend (adicionar
-Windows ou macOS) sem tocar em nada fora deste pacote.
+um SO novo) sem tocar em nada fora deste pacote.
 
-Só o backend Linux existe por enquanto — `_familia()` já faz a detecção por
-`sys.platform`, mas todo SO cai no backend Linux até os outros existirem.
-Cada backend Linux já checa `shutil.which(...)` antes de qualquer chamada,
-então isso não muda o comportamento observável num Windows/macOS de hoje:
-sem o binário, o método já devolve `None`/`False`/lista vazia, exatamente
-como devolveria um backend "não implementado" de verdade.
+Estado dos backends por preocupação:
+  - `Notifier`/`Clipboard`: Linux, Windows e macOS — `_familia()` escolhe.
+  - `Scheduler`/`SecretStore`: só Linux por enquanto (systemd e `pass`
+    dependem de mais decisão de produto — `apolo run --loop` já cobre o caso
+    de uso do Scheduler em qualquer SO nesse meio-tempo). `get_scheduler()`/
+    `get_secret_store()` sempre devolvem o backend Linux; como cada método já
+    checa `shutil.which(...)` antes de qualquer chamada, isso não muda o
+    comportamento observável num Windows/macOS de hoje: sem o binário, o
+    método já devolve `None`/`False`, exatamente como devolveria um backend
+    "não implementado" de verdade.
 """
 
 from __future__ import annotations
@@ -43,24 +47,42 @@ def _familia() -> str:
 
 
 def get_notifier() -> Notifier:
+    familia = _familia()
+    if familia == "win32":
+        from apolo.platform.win32.notifier import Win32Notifier
+
+        return Win32Notifier()
+    if familia == "darwin":
+        from apolo.platform.darwin.notifier import DarwinNotifier
+
+        return DarwinNotifier()
     from apolo.platform.linux.notifier import LinuxNotifier
 
-    return LinuxNotifier()  # único backend por enquanto — ver docstring do módulo
+    return LinuxNotifier()
 
 
 def get_scheduler() -> Scheduler:
     from apolo.platform.linux.scheduler import LinuxScheduler
 
-    return LinuxScheduler()
+    return LinuxScheduler()  # único backend por enquanto — ver docstring do módulo
 
 
 def get_secret_store() -> SecretStore:
     from apolo.platform.linux.secret_store import LinuxSecretStore
 
-    return LinuxSecretStore()
+    return LinuxSecretStore()  # único backend por enquanto — ver docstring do módulo
 
 
 def get_clipboard() -> Clipboard:
+    familia = _familia()
+    if familia == "win32":
+        from apolo.platform.win32.clipboard import Win32Clipboard
+
+        return Win32Clipboard()
+    if familia == "darwin":
+        from apolo.platform.darwin.clipboard import DarwinClipboard
+
+        return DarwinClipboard()
     from apolo.platform.linux.clipboard import LinuxClipboard
 
     return LinuxClipboard()

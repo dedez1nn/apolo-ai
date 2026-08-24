@@ -1,15 +1,18 @@
 """Entrada única do Apolo.
 
-`apolo run` varre e classifica; `apolo review` abre a TUI pra despachar a fila;
-`apolo block`/`allow` editam as regras pelo terminal; `apolo rules` lista o
-config; `apolo status` mostra os contadores; `apolo setup` instala o timer do
-systemd. (undo chega depois.)
+`apolo run` varre e classifica (com `--loop`, roda sozinho em intervalo, sem
+depender de nenhum agendador do sistema); `apolo review` abre a TUI pra
+despachar a fila; `apolo block`/`allow` editam as regras pelo terminal;
+`apolo rules` lista o config; `apolo status` mostra os contadores; `apolo
+setup` instala o timer do systemd, onde disponível. (undo chega depois.)
 """
 
 import argparse
 import logging
+import re
 import shutil
 import sys
+import time
 import tomllib
 from pathlib import Path
 
@@ -835,6 +838,49 @@ def _reconciliar_gmail(client, store, pasta_db: str, label: str) -> int:
     return removidos
 
 
+_INTERVALO_RE = re.compile(r"^(\d+)(min|h|s)$")
+
+
+def _intervalo_em_segundos(interval: str) -> int:
+    m = _INTERVALO_RE.match(interval)
+    if not m:
+        raise ValueError(
+            f"intervalo {interval!r} não reconhecido — use algo como '15min', '1h' ou '30s' "
+            "(uma unidade só; não combine tipo '1h30min')."
+        )
+    n, unidade = int(m.group(1)), m.group(2)
+    if unidade == "min":
+        return n * 60
+    if unidade == "h":
+        return n * 3600
+    return n  # s
+
+
+def cmd_run_loop(config: Config, interval: str, notify_enabled: bool = True) -> int:
+    """Roda `cmd_run` sozinho, em intervalo, sem depender de nenhum agendador
+    do sistema (systemd/Task Scheduler/launchd).
+
+    É a base que funciona em qualquer SO — `apolo setup` (systemd) continua
+    sendo a forma "de verdade" de agendar num Linux com systemd --user, mas
+    deixa de ser pré-requisito pra usar o Apolo em background: aqui é só
+    `while True: roda, dorme`. Uma passada que falhar (Bridge fora, rede
+    caiu) não derruba o loop — o erro fica no log e a próxima passada tenta
+    de novo. Ctrl+C encerra de forma limpa.
+    """
+    segundos = _intervalo_em_segundos(interval)
+    print(f"apolo run --loop: rodando a cada {interval} ({segundos}s). Ctrl+C pra parar.")
+    try:
+        while True:
+            try:
+                cmd_run(config, notify_enabled=notify_enabled)
+            except Exception:
+                logger.exception("cmd_run falhou dentro do loop — tentando de novo no próximo ciclo.")
+            time.sleep(segundos)
+    except KeyboardInterrupt:
+        print("\napolo run --loop: parado.")
+        return 0
+
+
 def cmd_status(config: Config) -> int:
     """Última execução e contadores por status."""
     with Storage(config.db_path) as store:
@@ -1202,6 +1248,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "-q", "--quiet", action="store_true", help="não envia notificações de desktop."
     )
+    p_run.add_argument(
+        "--loop", action="store_true",
+        help="roda sozinho em intervalo (while True: roda, dorme) — não depende de systemd/"
+             "Task Scheduler/launchd. Ctrl+C pra parar.",
+    )
+    p_run.add_argument(
+        "--interval", default="15min",
+        help="intervalo do --loop (ex.: 15min, 1h, 30s). Padrão 15min. Ignorado sem --loop.",
+    )
     sub.add_parser("status", help="última execução, contadores.")
     sub.add_parser("review", help="abre a TUI pra despachar a fila de revisão.")
     sub.add_parser("rules", help="lista as regras configuradas.")
@@ -1267,6 +1322,8 @@ def main(argv: list[str] | None = None) -> int:
     config = Config.load()
     try:
         if args.comando == "run":
+            if args.loop:
+                return cmd_run_loop(config, args.interval, notify_enabled=not args.quiet)
             return cmd_run(config, notify_enabled=not args.quiet)
         if args.comando == "status":
             return cmd_status(config)

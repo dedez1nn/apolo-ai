@@ -103,13 +103,23 @@ cp .env.example .env
 ```bash
 python -m apolo.cli run                  # busca, classifica e enfileira
 python -m apolo.cli run --quiet          # idem, sem notificação de desktop
+python -m apolo.cli run --loop           # roda sozinho a cada 15min (Ctrl+C pra parar) —
+                                          # não depende de systemd/Task Scheduler/launchd
+python -m apolo.cli run --loop --interval 5min
 python -m apolo.cli status               # contadores e ações sugeridas
 python -m apolo.cli review               # abre o hub (UI Textual) — ver docs/ui.md
 python -m apolo.cli rules                # lista as regras
 python -m apolo.cli block promo.x.com    # adiciona à blocklist
 python -m apolo.cli allow chefe@x.com    # adiciona à allowlist
-python -m apolo.cli setup                # instala o timer do systemd (user)
+python -m apolo.cli setup                # instala o timer do systemd (user, onde disponível)
 ```
+
+`--loop` é a forma que funciona em **qualquer sistema operacional** sem
+depender de nada além do Python — `apolo setup` (systemd) continua sendo a
+forma "de verdade" de agendar num Linux com systemd --user, mas deixa de ser
+pré-requisito pra usar o Apolo em segundo plano. Notificação de desktop
+(`apolo/notify.py`) e clipboard (`apolo/extract.py`) já têm backend nativo
+pra Linux, Windows e macOS — ver `apolo/platform/`.
 
 ## Notificações e agendamento (passo 5)
 
