@@ -431,6 +431,12 @@ AddRuleModal, EditRuleModal, RunModal, CodeModal, DispatchModal, GmailSetupModal
     padding: 1 0 0 0;
 }
 
+/* Texto solto em célula de tabela de layout: linhas contíguas, sem o
+   respiro de parágrafo entre cada fragmento. */
+.mail-cell {
+    padding: 0;
+}
+
 .mail-pre, .mail-table {
     background: $background 35%;
     border-left: tall $edge;
@@ -447,6 +453,7 @@ AddRuleModal, EditRuleModal, RunModal, CodeModal, DispatchModal, GmailSetupModal
 .mail-img {
     width: auto;
     height: auto;
+    max-width: 100%;
 }
 
 .mail-img-caption {

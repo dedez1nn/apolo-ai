@@ -33,6 +33,18 @@ logger = logging.getLogger("apolo.ui.email_preview")
 
 _ImageWidget = TGPImage if ("kitty" in os.environ.get("TERM", "") or os.environ.get("KITTY_WINDOW_ID")) else AutoImage
 
+
+class _PreviewImage(_ImageWidget, Renderable=_ImageWidget._Renderable):
+    """Imagem da prévia; clicável quando o <img> original estava dentro de <a>."""
+
+    def __init__(self, path: str, *, link_ref: int | None = None, classes: str | None = None):
+        super().__init__(path, classes=classes)
+        self._link_ref = link_ref
+
+    def on_click(self) -> None:
+        if self._link_ref is not None:
+            self.screen.action_abrir_link(self._link_ref)
+
 _DROP_CONTENT = {"head", "noscript", "script", "style", "title"}
 _BLOCK_TAGS = {
     "article", "aside", "blockquote", "div", "figcaption", "footer", "h1", "h2", "h3",
@@ -53,6 +65,21 @@ _HIDDEN_STYLE_RE = re.compile(
     r"display\s*:\s*none|visibility\s*:\s*hidden|mso-hide\s*:\s*all",
     re.IGNORECASE,
 )
+
+
+# Emails de marketing usam <table> aninhadas como layout, não como dados — por
+# padrão a tabela é "transparente" (o conteúdo flui como blocos normais, com
+# imagens e links preservados) e só entra no renderizador ASCII quando declara
+# ser tabela de verdade. `border`/`role` é o único sinal disponível na tag de
+# abertura; esperar por <th> exigiria bufferizar o documento inteiro.
+def _table_is_data(attrs: dict[str, str]) -> bool:
+    role = (attrs.get("role") or "").strip().lower()
+    if role in {"presentation", "none"}:
+        return False
+    if role in {"table", "grid"}:
+        return True
+    border = (attrs.get("border") or "").strip()
+    return bool(border) and border != "0"
 
 
 def _looks_hidden(attrs: dict[str, str]) -> bool:
@@ -77,6 +104,11 @@ class _PreviewBlock:
     align: str = "left"
     asset: _ImageAsset | None = None
     caption: str = ""
+    # Dimensões declaradas no HTML (atributos ou style, em px) e o índice em
+    # `_PreviewDoc.links` quando o <img> estava dentro de um <a>.
+    width_px: int | None = None
+    height_px: int | None = None
+    link_ref: int | None = None
 
 
 @dataclass
@@ -84,6 +116,40 @@ class _PreviewDoc:
     blocks: list[_PreviewBlock]
     resumo: str
     links: list[str] = field(default_factory=list)
+
+
+def _px_dim(attrs: dict[str, str], name: str) -> int | None:
+    """Extrai width/height do <img> em px (atributo HTML ou style inline)."""
+    raw = (attrs.get(name) or "").strip().lower()
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(?:px)?", raw)
+    if m:
+        return int(float(m.group(1)))
+    style = (attrs.get("style") or "").lower()
+    m = re.search(rf"(?:^|[;\s]){name}\s*:\s*(\d+(?:\.\d+)?)px", style)
+    if m:
+        return int(float(m.group(1)))
+    return None
+
+
+def _image_px_size(path: Path) -> tuple[int, int]:
+    try:
+        from PIL import Image as PILImage
+
+        with PILImage.open(path) as im:
+            return im.width, im.height
+    except Exception:
+        return 0, 0
+
+
+def _cell_px() -> tuple[int, int]:
+    """Tamanho da célula do terminal em px, pra converter px do HTML → células."""
+    try:
+        from textual_image._terminal import get_cell_size
+
+        cell = get_cell_size()
+        return cell.width or 8, cell.height or 16
+    except Exception:
+        return 8, 16
 
 
 def _decode_part(part: Message) -> str:
@@ -168,7 +234,7 @@ def _write_image_file(asset_dir: Path, filename: str, raw: bytes, *, ext: str | 
 
 
 class _ImageResolver:
-    def __init__(self, asset_dir: Path, cid_images: dict[str, _ImageAsset], *, external_limit: int = 6):
+    def __init__(self, asset_dir: Path, cid_images: dict[str, _ImageAsset], *, external_limit: int = 12):
         self.asset_dir = asset_dir
         self.cid_images = cid_images
         self.external_limit = external_limit
@@ -260,6 +326,8 @@ class _HtmlToBlocks(HTMLParser):
         self._tag_stack: list[str] = []
         self._link_stack: list[str] = []
         self._link_ref_stack: list[int | None] = []
+        self._link_plain_pos: list[int] = []
+        self._img_link_refs: set[int] = set()
         self._list_stack: list[dict[str, int]] = []
         self._variant = "body"
         self._align = "left"
@@ -269,6 +337,7 @@ class _HtmlToBlocks(HTMLParser):
         self._table_row: list[str] | None = None
         self._table_header = False
         self._table_cell: list[str] | None = None
+        self._table_nested = 0
 
     def handle_starttag(self, tag: str, attrs) -> None:
         tag = tag.lower()
@@ -284,19 +353,41 @@ class _HtmlToBlocks(HTMLParser):
         if self._skip_depth:
             return
         if self._table_rows is not None:
-            self._handle_table_start(tag)
+            self._handle_table_start(tag, attrs_map)
             return
         if tag == "table":
             self._flush_text()
-            self._table_rows = []
+            if _table_is_data(attrs_map):
+                self._table_rows = []
+                self._table_nested = 0
+            return
+        if tag in {"tr", "td", "th"}:
+            # Tabela de layout: célula/linha vira só uma quebra de bloco, sem
+            # o respiro vertical de parágrafo — no email eram linhas contíguas.
+            self._flush_text("cell")
             return
         if tag == "img":
             self._flush_text()
+            width_px = _px_dim(attrs_map, "width")
+            height_px = _px_dim(attrs_map, "height")
+            if (width_px is not None and width_px <= 2) or (height_px is not None and height_px <= 2):
+                # Pixel de rastreamento (1×1): não baixa nem ocupa a prévia.
+                return
             src = attrs_map.get("src", "")
-            alt = attrs_map.get("alt", "")
+            alt = (attrs_map.get("alt") or "").strip()
             asset = self.resolver.resolve(src, alt)
-            caption = alt or src or "imagem"
-            self.blocks.append(_PreviewBlock(kind="image", asset=asset, caption=caption))
+            # Legenda só quando o HTML descreve a imagem — cair no src
+            # despejava URLs de CDN de 100+ caracteres embaixo de cada figura.
+            caption = alt
+            link_ref = self._link_ref_stack[-1] if self._link_ref_stack else None
+            if link_ref is not None:
+                self._img_link_refs.add(link_ref)
+            self.blocks.append(
+                _PreviewBlock(
+                    kind="image", asset=asset, caption=caption,
+                    width_px=width_px, height_px=height_px, link_ref=link_ref,
+                )
+            )
             return
         if tag == "br":
             self._append_linebreak()
@@ -321,6 +412,7 @@ class _HtmlToBlocks(HTMLParser):
             href = attrs_map.get("href", "")
             self._link_stack.append(href)
             self._link_ref_stack.append(self._register_link(href))
+            self._link_plain_pos.append(len(self._plain_parts))
         self._tag_stack.append(tag)
 
     def handle_endtag(self, tag: str) -> None:
@@ -341,11 +433,26 @@ class _HtmlToBlocks(HTMLParser):
         if tag == "a":
             href = self._link_stack.pop() if self._link_stack else ""
             ref = self._link_ref_stack.pop() if self._link_ref_stack else None
-            if href and ref is not None and href not in "".join(self._plain_parts):
+            pos = self._link_plain_pos.pop() if self._link_plain_pos else 0
+            # Só ancora o marcador se o link deixou texto legível no bloco
+            # atual — sem isso, links que embrulham blocos inteiros (flushed
+            # antes do </a>) ou só spacers ("." de template) largavam um
+            # "(n)" órfão numa linha própria.
+            texto_do_link = "".join(self._plain_parts[min(pos, len(self._plain_parts)):])
+            if (
+                href and ref is not None
+                # Link cujo conteúdo era a própria imagem: a imagem e a
+                # legenda já são clicáveis, o marcador inline só sobraria.
+                and ref not in self._img_link_refs
+                and re.search(r"\w", texto_do_link)
+                and href not in "".join(self._plain_parts)
+            ):
                 marker = f" [{INK_FAINT} @click=screen.abrir_link({ref})]({ref})[/]"
                 self._append_inline(marker, f" ({ref})")
         if tag in _BLOCK_TAGS:
             self._flush_text()
+        elif tag in {"table", "tr", "td", "th"}:
+            self._flush_text("cell")
         if tag in {"ol", "ul"} and self._list_stack:
             self._flush_text()
             self._list_stack.pop()
@@ -376,7 +483,18 @@ class _HtmlToBlocks(HTMLParser):
             self.blocks.append(_PreviewBlock(kind="text", text=self._render_table(), variant="table"))
         self._table_rows = None
 
-    def _handle_table_start(self, tag: str) -> None:
+    def _handle_table_start(self, tag: str, attrs: dict[str, str]) -> None:
+        if tag == "table":
+            # Tabela aninhada dentro de uma tabela de dados: conta a
+            # profundidade pro </table> interno não encerrar a externa e o
+            # conteúdo dela cai na célula aberta, sem resetar linha/célula.
+            self._table_nested += 1
+            return
+        if tag == "a":
+            self._register_link(attrs.get("href", ""))
+            return
+        if self._table_nested:
+            return
         if tag == "tr":
             self._table_row = []
             self._table_header = False
@@ -386,6 +504,11 @@ class _HtmlToBlocks(HTMLParser):
                 self._table_header = True
 
     def _handle_table_end(self, tag: str) -> None:
+        if tag == "table" and self._table_nested:
+            self._table_nested -= 1
+            return
+        if tag != "table" and self._table_nested:
+            return
         if tag in {"td", "th"} and self._table_row is not None and self._table_cell is not None:
             cell = "".join(self._table_cell).strip()
             self._table_row.append(cell)
@@ -474,7 +597,12 @@ class _HtmlToBlocks(HTMLParser):
         self._plain_parts.append(markup if plain is None else plain)
 
     def _styled_text(self, text: str) -> str:
-        escaped = mesc(text)
+        # Estiliza só o miolo — sublinhado/cor não podem englobar o whitespace
+        # das bordas, senão sobram "riscos" soltos antes/depois das palavras.
+        lead, core, trail = re.match(r"^(\s*)(.*?)(\s*)$", text, re.DOTALL).groups()
+        if not core:
+            return mesc(text)
+        escaped = mesc(core)
         styles: list[str] = []
         if self._variant in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             styles.append(f"b {AZURE_BRT}")
@@ -485,17 +613,20 @@ class _HtmlToBlocks(HTMLParser):
         if any(tag in self._tag_stack for tag in {"code", "tt"}):
             styles.append(INK_FAINT)
         if self._link_stack:
-            styles.extend([AZURE_BRT, "u"])
+            styles.append(AZURE_BRT)
             ref = self._link_ref_stack[-1] if self._link_ref_stack else None
             if ref is not None:
                 styles.append(f"@click=screen.abrir_link({ref})")
         if not styles:
-            return escaped
-        return "".join(f"[{style}]" for style in styles) + escaped + ("[/]" * len(styles))
+            return mesc(text)
+        styled = "".join(f"[{style}]" for style in styles) + escaped + ("[/]" * len(styles))
+        return mesc(lead) + styled + mesc(trail)
 
-    def _flush_text(self) -> None:
+    def _flush_text(self, variant: str | None = None) -> None:
         plain = "".join(self._plain_parts).strip()
-        if not plain:
+        # Sem nenhum caractere de palavra não há o que ler: derruba os "."
+        # e traços que templates usam como espaçador invisível.
+        if not plain or not re.search(r"\w", plain):
             self._markup_parts.clear()
             self._plain_parts.clear()
             self._variant = "body"
@@ -508,7 +639,7 @@ class _HtmlToBlocks(HTMLParser):
                 for line in markup.splitlines()
             )
         self.blocks.append(
-            _PreviewBlock(kind="text", text=markup, variant=self._variant or "body", align=self._align)
+            _PreviewBlock(kind="text", text=markup, variant=variant or self._variant or "body", align=self._align)
         )
         self._markup_parts.clear()
         self._plain_parts.clear()
@@ -727,20 +858,29 @@ class EmailPreviewModal(ModalScreen):
             page.mount(Static(f"[{INK_FAINT}]{'─' * 72}[/]", markup=True, classes="mail-block"))
             return
         if block.kind == "image":
+            marcador = ""
+            if block.link_ref is not None:
+                marcador = f"  [{INK_FAINT} @click=screen.abrir_link({block.link_ref})]({block.link_ref})[/]"
             if block.asset is not None:
-                page.mount(Center(_ImageWidget(str(block.asset.path), classes="mail-img"), classes="mail-img-wrap"))
+                real_w, real_h = _image_px_size(block.asset.path)
+                if 0 < real_w <= 2 and 0 < real_h <= 2:
+                    return  # pixel de rastreamento sem dimensões declaradas
+                img = _PreviewImage(str(block.asset.path), link_ref=block.link_ref, classes="mail-img")
+                self._dimensionar(img, block, real_w, real_h, page.content_size.width)
+                page.mount(Center(img, classes="mail-img-wrap"))
                 if block.caption:
                     page.mount(
                         Static(
-                            f"[{INK_FAINT}]{mesc(block.caption)}[/]",
+                            f"[{INK_FAINT}]{mesc(block.caption)}[/]{marcador}",
                             markup=True,
                             classes="mail-img-caption",
                         )
                     )
             else:
+                legenda = f"  [{INK_FAINT}]{mesc(block.caption)}[/]" if block.caption else ""
                 page.mount(
                     Static(
-                        f"[{AMBER}]imagem indisponível[/]  [{INK_FAINT}]{mesc(block.caption)}[/]",
+                        f"[{AMBER}]imagem indisponível[/]{legenda}{marcador}",
                         markup=True,
                         classes="mail-block",
                     )
@@ -751,6 +891,31 @@ class EmailPreviewModal(ModalScreen):
             page.mount(Center(widget))
         else:
             page.mount(widget)
+
+    @staticmethod
+    def _dimensionar(img: _PreviewImage, block: _PreviewBlock, real_w: int, real_h: int, max_cells: int) -> None:
+        """Converte as dimensões do HTML (px declarado, ou o tamanho real do
+        arquivo) pro tamanho em células do terminal, em vez de deixar a imagem
+        esticar até a largura da página. Largura E altura são fixadas em
+        células: deixar a altura `auto` faz o textual_image derivá-la de
+        `content_size.width`, que na primeira passada de layout dentro de
+        containers `height: auto` ainda é 0 — a imagem ficava com altura 0."""
+        w_px: float | None = block.width_px or (real_w or None)
+        h_px: float | None = block.height_px or (real_h or None)
+        # Se só um lado veio do HTML, a proporção real do arquivo manda no outro.
+        if block.width_px and not block.height_px and real_w and real_h:
+            h_px = block.width_px * real_h / real_w
+        elif block.height_px and not block.width_px and real_w and real_h:
+            w_px = block.height_px * real_w / real_h
+        if not w_px or not h_px:
+            return
+        cell_w, cell_h = _cell_px()
+        cells_w = max(4, round(w_px / cell_w))
+        if max_cells > 0:
+            cells_w = min(cells_w, max_cells)
+        cells_h = max(1, round(cells_w * cell_w * (h_px / w_px) / cell_h))
+        img.styles.width = cells_w
+        img.styles.height = cells_h
 
     def action_fechar(self) -> None:
         self.dismiss()
