@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Center, Vertical
@@ -27,6 +28,7 @@ from textual_image.widget import AutoImage, TGPImage
 from apolo.actions import DispatchItem
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, parse_sender
 from apolo.rules.writer import add_rule_entry, remove_rule_entry
+from apolo.ui.confirm import ConfirmModal
 from apolo.ui.model import Item, fmt_data, fmt_remetente
 from apolo.ui.queue import DispatchModal
 from apolo.ui.theme import (
@@ -102,7 +104,8 @@ class SwipeCard(Vertical):
         rem = mesc(fmt_remetente(it.remetente))
         assunto = mesc(it.assunto or "(sem assunto)")
         data = fmt_data(it.data)
-        linhas = [f"[b $accent]{rem}[/]", "", f"[$text]{assunto}[/]"]
+        estrela = f"[{AMBER}]★[/] " if it.favorito else ""
+        linhas = [f"{estrela}[b $accent]{rem}[/]", "", f"[$text]{assunto}[/]"]
         if data:
             linhas.append(f"\n[{INK_FAINT}]{data}[/]")
         return "\n".join(linhas)
@@ -206,8 +209,29 @@ class SwipeScreen(Screen):
     def action_swipe(self, direcao: str) -> None:
         if self._carta is None or not self._fila:
             return
+        self._swipe_com_confirmacao(direcao)
+
+    @work
+    async def _swipe_com_confirmacao(self, direcao: str) -> None:
+        # push_screen_wait só pode ser chamado de dentro de um worker (daí o
+        # @work aqui) — a Binding chama action_swipe, síncrona, que só
+        # dispara este worker.
+        if self._carta is None or not self._fila:
+            return
         nome, acao, lista = _SETA_ACAO[direcao]
         it = self._fila[0]
+
+        if acao == ACAO_LIXEIRA and it.favorito:
+            rem = mesc(fmt_remetente(it.remetente))
+            confirmado = await self.app.push_screen_wait(
+                ConfirmModal(
+                    f"[{AMBER}]★[/] Este email de {rem} está favoritado.\n"
+                    "Tem certeza que quer excluí-lo?",
+                    titulo="Email favoritado",
+                )
+            )
+            if not confirmado:
+                return
 
         rule_undo = None
         if lista:

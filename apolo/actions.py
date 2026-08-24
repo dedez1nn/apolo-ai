@@ -39,6 +39,7 @@ class DispatchResult:
     lixeira: int = 0
     mantidos: int = 0
     falhas: int = 0
+    protegidos: int = 0  # favoritado no servidor bem na hora H — não enviado
 
 
 def dispatch_lixeira_imap(
@@ -61,6 +62,26 @@ def dispatch_lixeira_imap(
     """
     result = DispatchResult()
     by_uid = {item.uid: item for item in itens}
+    uids = list(by_uid.keys())
+    if not uids:
+        return result
+
+    # Última checagem, bem na hora — o dono pode ter favoritado um email
+    # depois que a fila decidiu (na UI ou até fora do Apolo), sem que nenhum
+    # sync tenha rodado nesse meio-tempo pra pegar a mudança. UID SEARCH
+    # FLAGGED cobre a pasta inteira numa chamada só, então não pesa mais que
+    # 1 vs. 100 itens no lote.
+    try:
+        flagged = client.flagged_uids(pasta_real)
+    except Exception as e:
+        logger.warning("checagem de \\Flagged em %s falhou (seguindo sem ela): %s", pasta_real, e)
+        flagged = set()
+    for uid in list(by_uid):
+        if uid in flagged:
+            item = by_uid.pop(uid)
+            store.update_favorito(pasta=item.pasta, uidvalidity=item.uidvalidity, uid=item.uid, favorito=True)
+            logger.warning("pulei %s UID %d (lixeira): favoritado no servidor — mantido na fila.", pasta_real, uid)
+            result.protegidos += 1
     uids = list(by_uid.keys())
     if not uids:
         return result
@@ -137,6 +158,7 @@ def dispatch(client: BridgeClient, store: Storage, itens: list[DispatchItem], *,
         res = dispatch_lixeira_imap(client, store, pasta_itens, pasta_real=pasta, trash_folder=trash_folder)
         result.lixeira += res.lixeira
         result.falhas += res.falhas
+        result.protegidos += res.protegidos
 
     return result
 
@@ -178,6 +200,7 @@ def dispatch_imap_account(
         )
         result.lixeira += res.lixeira
         result.falhas += res.falhas
+        result.protegidos += res.protegidos
 
     return result
 
@@ -198,6 +221,27 @@ def dispatch_lixeira_gmail(
     result = DispatchResult()
     lixeira_com_id = [i for i in itens if i.provider_id]
     lixeira_sem_id = [i for i in itens if not i.provider_id]
+
+    # Última checagem, bem na hora — mesma ideia de `dispatch_lixeira_imap`
+    # (ver lá o porquê). Aqui é por mensagem (`format=minimal`, sem custo de
+    # headers/corpo) porque o lote pode misturar labels/pastas diferentes.
+    protegidos: list[DispatchItem] = []
+    ainda_com_id: list[DispatchItem] = []
+    for item in lixeira_com_id:
+        try:
+            favoritado = client.is_starred(item.provider_id)
+        except Exception as e:
+            logger.warning("checagem de STARRED de %s falhou (seguindo sem ela): %s", item.provider_id, e)
+            favoritado = False
+        if favoritado:
+            protegidos.append(item)
+        else:
+            ainda_com_id.append(item)
+    for item in protegidos:
+        store.update_favorito(pasta=item.pasta, uidvalidity=item.uidvalidity, uid=item.uid, favorito=True)
+        logger.warning("pulei gmail:%s %s (lixeira): favoritado no servidor — mantido na fila.", client.name, item.provider_id)
+    result.protegidos += len(protegidos)
+    lixeira_com_id = ainda_com_id
 
     ids_ok: set[str] = set()
     if lixeira_com_id:
@@ -267,6 +311,7 @@ def dispatch_gmail(
     res = dispatch_lixeira_gmail(client, store, lixeira_itens)
     result.lixeira += res.lixeira
     result.falhas += res.falhas
+    result.protegidos += res.protegidos
 
     for item in manter_itens:
         store.mark_dispatched(
@@ -477,6 +522,7 @@ def _apply_decisions_inner(
             total.lixeira += res.lixeira
             total.mantidos += res.mantidos
             total.falhas += res.falhas
+            total.protegidos += res.protegidos
 
         if imap_account_itens:
             from apolo import secrets
@@ -509,6 +555,7 @@ def _apply_decisions_inner(
                 total.lixeira += res.lixeira
                 total.mantidos += res.mantidos
                 total.falhas += res.falhas
+                total.protegidos += res.protegidos
 
         if gmail_itens:
             by_conta: dict[str, list] = {}
@@ -531,5 +578,6 @@ def _apply_decisions_inner(
                 total.lixeira += res.lixeira
                 total.mantidos += res.mantidos
                 total.falhas += res.falhas
+                total.protegidos += res.protegidos
 
     return total

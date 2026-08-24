@@ -347,6 +347,20 @@ class BridgeClient:
         raw_ids = data[0].split() if data and data[0] else []
         return {int(x) for x in raw_ids}
 
+    def flagged_uids(self, pasta: str) -> set[int]:
+        """UIDs atualmente com \\Flagged (favoritado) na pasta — um único UID
+        SEARCH que cobre a pasta inteira, sem custo por mensagem. Usado pra
+        reconferir favoritos de e-mails que o Apolo já tinha sincronizado (o
+        favorito só é capturado no FETCH original — ver `_fetch_headers`).
+        """
+        assert self._imap is not None
+        self._select_readonly(pasta)
+        typ, data = self._imap.uid("search", None, "FLAGGED")
+        if typ != "OK":
+            raise RuntimeError(f"falha no UID SEARCH FLAGGED em {pasta!r}")
+        raw_ids = data[0].split() if data and data[0] else []
+        return {int(x) for x in raw_ids}
+
     def restore_from_trash(self, trash_folder: str, message_id: str | None, pasta_origem: str) -> bool:
         """Restaura da lixeira pra `pasta_origem`, buscando pelo Message-ID.
 
@@ -398,12 +412,16 @@ class BridgeClient:
         return email.message_from_bytes(data[0][1])
 
     def _fetch_headers(self, uid: int) -> FetchedEmail | None:
-        """Busca só os headers de interesse via BODY.PEEK (não marca lido)."""
+        """Busca os headers de interesse + FLAGS via BODY.PEEK (não marca lido).
+
+        FLAGS entra no mesmo FETCH pra não gastar um round-trip a mais só pra
+        saber se a mensagem está com \\Flagged (favoritada no Proton/Gmail).
+        """
         assert self._imap is not None
         typ, data = self._imap.uid(
             "fetch",
             str(uid),
-            "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID LIST-UNSUBSCRIBE)])",
+            "(FLAGS BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID LIST-UNSUBSCRIBE)])",
         )
         if typ != "OK" or not data or not isinstance(data[0], tuple):
             logger.warning("FETCH do header do UID %d falhou (typ=%s).", uid, typ)
@@ -419,4 +437,5 @@ class BridgeClient:
             data=msg.get("Date", ""),
             # str() porque headers com codificação atípica podem vir como Header.
             list_unsubscribe=str(msg.get("List-Unsubscribe") or ""),
+            favorito=b"\\Flagged" in data[0][0],
         )

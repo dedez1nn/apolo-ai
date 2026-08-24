@@ -358,6 +358,9 @@ class GmailClient:
             data=headers.get("date", ""),
             list_unsubscribe=headers.get("list-unsubscribe", ""),
             provider_id=gmail_id,
+            # labelIds vem de graça no recurso da mensagem (não é header) —
+            # STARRED é como o Gmail marca "favorito".
+            favorito="STARRED" in resp.get("labelIds", []),
         )
 
     def list_ids(self, pasta: str, limit: int) -> tuple[list[str], int]:
@@ -390,6 +393,41 @@ class GmailClient:
                 break
 
         return gmail_ids, history_id
+
+    def is_starred(self, gmail_id: str) -> bool:
+        """Checagem de STARRED de uma única mensagem, sem custo de headers/corpo
+        (`format=minimal`). Usado na hora H do despacho — ver `starred_ids` pra
+        reconferência em lote de vários e-mails pendentes de uma pasta."""
+        token = self._ensure_token()
+        try:
+            resp = self._api("GET", f"/users/me/messages/{gmail_id}", token=token, params={"format": "minimal"})
+        except urllib.error.HTTPError:
+            return False
+        return "STARRED" in resp.get("labelIds", [])
+
+    def starred_ids(self, pasta: str) -> set[str]:
+        """IDs atualmente com o label STARRED nessa pasta/label — paginado,
+        sem custo por mensagem (ao contrário de checar `format=minimal` uma
+        por uma). Usado pra reconferir favoritos de e-mails que o Apolo já
+        tinha sincronizado (o favorito só é capturado no fetch original —
+        ver `_fetch_headers`).
+        """
+        token = self._ensure_token()
+        label = "INBOX" if pasta.upper() == "INBOX" else pasta
+        ids: set[str] = set()
+        page_token = None
+        while True:
+            params: list[tuple[str, str]] = [
+                ("labelIds", label), ("labelIds", "STARRED"), ("maxResults", "500"),
+            ]
+            if page_token:
+                params.append(("pageToken", page_token))
+            resp = self._api("GET", "/users/me/messages", token=token, params=params)
+            ids.update(m["id"] for m in resp.get("messages", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+        return ids
 
     def uid_for(self, gmail_id: str) -> int:
         """UID determinístico de um ID do Gmail — sem chamada de rede, pra

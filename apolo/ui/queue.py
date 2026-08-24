@@ -27,6 +27,7 @@ from textual.widgets import Label, ListItem, ListView, Static
 from apolo.actions import DispatchItem
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_REVISAR, parse_sender
 from apolo.rules.writer import add_rule_entry, remove_rule_entry
+from apolo.ui.confirm import ConfirmModal
 from apolo.ui.model import ACAO_COR, ACAO_ICONE, ACAO_ROTULO, Item, fmt_data, fmt_remetente
 from apolo.ui.theme import (
     AMBER,
@@ -71,7 +72,8 @@ class EmailRow(ListItem):
         tag = _STATUS_ROTULO.get(status, status).upper()
         rem = mesc(fmt_remetente(it.remetente))
         badge = f"[{fraca}]\\[{it.conta}][/] " if self._mostrar_badge else ""
-        return f"[b {cor}]{icone} {tag:<8}[/]  {badge}[{INK}]{rem}[/]"
+        estrela = f"[{AMBER}]★[/] " if it.favorito else ""
+        return f"[b {cor}]{icone} {tag:<8}[/]  {badge}{estrela}[{INK}]{rem}[/]"
 
     def _linha2(self) -> str:
         it = self.item
@@ -147,6 +149,7 @@ class QueueScreen(Screen):
         self._sync_encontrados = 0
         self._sync_analisando = 0
         self._sync_auto_lixeira = 0
+        self._sync_favoritos = 0
         self._sync_rows: dict[tuple, EmailRow] = {}
         self.query_one("#q-list", ListView).focus()
         self._aplicar_filtro()
@@ -219,7 +222,8 @@ class QueueScreen(Screen):
         sync_txt = (
             f"    [{AMBER}](⇄ sincronizando{sync_alvo}… {self._sync_encontrados} encontrado(s)"
             f"{f', {self._sync_analisando} analisando' if self._sync_analisando else ''}"
-            f"{f', {self._sync_auto_lixeira} auto→lixeira' if self._sync_auto_lixeira else ''})[/]"
+            f"{f', {self._sync_auto_lixeira} auto→lixeira' if self._sync_auto_lixeira else ''}"
+            f"{f', {self._sync_favoritos} ★ atualizado(s)' if self._sync_favoritos else ''})[/]"
             if self._sync_ativo
             else ""
         )
@@ -257,20 +261,45 @@ class QueueScreen(Screen):
         await self._list.pop(idx)
         self._render_header()
 
-    async def action_decidir(self, acao: str) -> None:
+    def action_decidir(self, acao: str) -> None:
         idx = self._idx()
         if idx is None or idx >= len(self._exibidos):
             return
-        rem = mesc(self._exibidos[idx].remetente)
+        self._decidir_com_confirmacao(self._exibidos[idx], acao)
+
+    @work
+    async def _decidir_com_confirmacao(self, it: Item, acao: str) -> None:
+        # push_screen_wait só pode ser chamado de dentro de um worker (daí o
+        # @work aqui) — a Binding chama action_decidir, síncrona, que só
+        # dispara este worker.
+        if acao == ACAO_LIXEIRA and it.favorito and not await self._confirmar_exclusao(it):
+            return
+        rem = mesc(it.remetente)
         await self.decidir(acao)
         self._msg(f"[{ACAO_COR[acao]}]→ {ACAO_ROTULO[acao]}:[/] {rem}")
 
-    async def action_aprender(self, lista: str) -> None:
+    async def _confirmar_exclusao(self, it: Item) -> bool:
+        """Email favoritado indo pra lixeira: confirma antes de decidir de vez."""
+        rem = mesc(fmt_remetente(it.remetente))
+        return await self.app.push_screen_wait(
+            ConfirmModal(
+                f"[{AMBER}]★[/] Este email de {rem} está favoritado.\n"
+                "Tem certeza que quer excluí-lo?",
+                titulo="Email favoritado",
+            )
+        )
+
+    def action_aprender(self, lista: str) -> None:
         idx = self._idx()
         if idx is None or idx >= len(self._exibidos):
             return
-        it = self._exibidos[idx]
+        self._aprender_com_confirmacao(self._exibidos[idx], lista)
+
+    @work
+    async def _aprender_com_confirmacao(self, it: Item, lista: str) -> None:
         acao = ACAO_LIXEIRA if lista == "blocklist" else ACAO_MANTER
+        if acao == ACAO_LIXEIRA and it.favorito and not await self._confirmar_exclusao(it):
+            return
         _, dominio = parse_sender(it.remetente)
         if not dominio:
             self._msg(f"[{AMBER}]sem domínio no remetente — regra não criada[/]")
@@ -370,6 +399,7 @@ class QueueScreen(Screen):
         self._sync_encontrados = 0
         self._sync_analisando = 0
         self._sync_auto_lixeira = 0
+        self._sync_favoritos = 0
         self._render_header()
         rotulo = conta or "todas as contas"
         self._msg(f"[{AMBER}]sincronizando {rotulo} em segundo plano…[/]")
@@ -426,6 +456,9 @@ class QueueScreen(Screen):
         elif kind == "auto_lixeira":
             self._sync_auto_lixeira += kwargs.get("quantidade", 0)
             self._render_header()
+        elif kind == "favoritos":
+            self._sync_favoritos += kwargs.get("quantidade", 0)
+            self._render_header()
         elif kind == "erro":
             self.app.notify(mesc(f"[{kwargs.get('conta')}] {kwargs.get('msg')}"), severity="warning", title="sincronizar")
         elif kind == "erro_fatal":
@@ -435,7 +468,8 @@ class QueueScreen(Screen):
         elif kind == "fim":
             self._sync_ativo = False
             auto_txt = f", {self._sync_auto_lixeira} auto→lixeira" if self._sync_auto_lixeira else ""
-            self._msg(f"[{AMBER}]sincronização concluída — {self._sync_encontrados} novo(s){auto_txt}[/]")
+            fav_txt = f", {self._sync_favoritos} ★ atualizado(s)" if self._sync_favoritos else ""
+            self._msg(f"[{AMBER}]sincronização concluída — {self._sync_encontrados} novo(s){auto_txt}{fav_txt}[/]")
             if self._sync_auto_lixeira:
                 self.app.notify(
                     f"{self._sync_auto_lixeira} email(s) movido(s) automaticamente pra lixeira.",
@@ -521,6 +555,8 @@ class DispatchModal(ModalScreen):
             partes = [f"{res.lixeira} lixeira", f"{res.mantidos} mantido(s)"]
             if res.falhas:
                 partes.append(f"{res.falhas} falha(s)")
+            if res.protegidos:
+                partes.append(f"{res.protegidos} ★ protegido(s) (favoritado — não enviado)")
             msg = ", ".join(partes)
         except Exception as exc:
             msg = f"erro: {mesc(str(exc))}"

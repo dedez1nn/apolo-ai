@@ -78,6 +78,7 @@ class Item:
         self.data = row["data"] or ""
         self.regra = row["regra_casada"] or ""
         self.acao = row["acao_sugerida"] or ACAO_REVISAR
+        self.favorito = bool(row["favorito"]) if "favorito" in row.keys() else False
         # True enquanto aguarda o Ollama (sincronização ao vivo) — não é uma
         # ação de despacho, só um estado transitório de exibição.
         self.analisando = False
@@ -101,4 +102,5 @@ class Item:
         obj.regra = ""
         obj.acao = acao or ACAO_REVISAR
         obj.analisando = False
+        obj.favorito = getattr(s, "favorito", False)
         return obj

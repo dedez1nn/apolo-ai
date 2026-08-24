@@ -20,9 +20,10 @@ from apolo.config import AccountConfig, Config, load_accounts
 from apolo.fetch.imap import BridgeClient
 from apolo.logging_setup import current_log_path
 from apolo.notify import notify
-from apolo.rules.engine import ACAO_LIXEIRA, RuleEngine, acao_efetiva, eh_recente
+from apolo.rules.engine import ACAO_LIXEIRA, ACAO_REVISAR, RuleEngine, acao_efetiva, eh_recente
 from apolo.rules.writer import add_rule_entry, detect_tipo
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
+from apolo.sync import refresh_favoritos_gmail, refresh_favoritos_imap
 from apolo.verify import VerifyConfig, apply_ia_decision
 
 logger = logging.getLogger("apolo.cli")
@@ -88,6 +89,7 @@ def _gmail_run(
                 assunto=m.assunto,
                 data=m.data,
                 provider_id=m.provider_id,
+                favorito=m.favorito,
             ):
                 novos_pasta += 1
 
@@ -115,6 +117,10 @@ def _gmail_run(
             analisados += 1
             recente = eh_recente(m.data, config.ai_max_dias)
             efetiva = acao_efetiva(decisao, ai_ready, recente)
+            if m.favorito and efetiva == ACAO_LIXEIRA:
+                # Favoritado no Gmail: nunca some sozinho pelo auto-envio —
+                # cai pra revisão manual, onde o dono vê o aviso antes de excluir.
+                efetiva = ACAO_REVISAR
             store.classify_email(
                 pasta=pasta_db,
                 uidvalidity=result.uidvalidity,
@@ -164,6 +170,17 @@ def _gmail_run(
             else:
                 if removidos:
                     print(f"[{conta_id}/{pasta}] {removidos} email(s) saíram da INBOX por fora — removido(s) da fila.")
+
+            try:
+                favoritos = refresh_favoritos_gmail(client, store, pasta_db, label)
+            except Exception as e:
+                logger.warning(
+                    "[%s/%s] reconferência de favoritos falhou; mantendo como estava: %s: %s",
+                    conta_id, pasta, type(e).__name__, e,
+                )
+            else:
+                if favoritos:
+                    print(f"[{conta_id}/{pasta}] {favoritos} favorito(s) atualizado(s).")
 
         store.set_folder_meta(meta_key, result.uidvalidity, result.ultimo_uid)
         total_novos += novos_pasta
@@ -219,6 +236,7 @@ def _imap_account_run(
                 if store.insert_email(
                     conta=conta_id, pasta=pasta_db, uidvalidity=result.uidvalidity, uid=m.uid,
                     message_id=m.message_id, remetente=m.remetente, assunto=m.assunto, data=m.data,
+                    favorito=m.favorito,
                 ):
                     novos_pasta += 1
 
@@ -239,6 +257,10 @@ def _imap_account_run(
                 analisados += 1
                 recente = eh_recente(m.data, config.ai_max_dias)
                 efetiva = acao_efetiva(decisao, ai_ready, recente)
+                if m.favorito and efetiva == ACAO_LIXEIRA:
+                    # Favoritado: nunca some sozinho pelo auto-envio — cai pra
+                    # revisão manual, onde o dono vê o aviso antes de excluir.
+                    efetiva = ACAO_REVISAR
                 store.classify_email(
                     pasta=pasta_db, uidvalidity=result.uidvalidity, uid=m.uid,
                     status=novo_status, categoria=decisao.categoria,
@@ -276,6 +298,9 @@ def _imap_account_run(
                 removidos = _reconciliar_imap(client, store, pasta_db, pasta)
                 if removidos:
                     print(f"[{conta_id}/{pasta}] {removidos} email(s) saíram da pasta por fora — removido(s) da fila.")
+                favoritos = refresh_favoritos_imap(client, store, pasta_db, pasta)
+                if favoritos:
+                    print(f"[{conta_id}/{pasta}] {favoritos} favorito(s) atualizado(s).")
 
             store.set_folder_meta(pasta_db, result.uidvalidity, result.ultimo_uid)
             total_novos += novos_pasta
@@ -556,6 +581,7 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                         remetente=m.remetente,
                         assunto=m.assunto,
                         data=m.data,
+                        favorito=m.favorito,
                     ):
                         novos_pasta += 1
 
@@ -587,6 +613,10 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                     analisados += 1
                     recente = eh_recente(m.data, config.ai_max_dias)
                     efetiva = acao_efetiva(decisao, ai_ready, recente)
+                    if m.favorito and efetiva == ACAO_LIXEIRA:
+                        # Favoritado: nunca some sozinho pelo auto-envio — cai
+                        # pra revisão manual, onde o dono vê o aviso antes de excluir.
+                        efetiva = ACAO_REVISAR
                     store.classify_email(
                         pasta=pasta,
                         uidvalidity=result.uidvalidity,
@@ -636,6 +666,9 @@ def cmd_run(config: Config, notify_enabled: bool = True) -> int:
                     removidos = _reconciliar_imap(client, store, pasta)
                     if removidos:
                         print(f"[{pasta}] {removidos} email(s) saíram da pasta por fora — removido(s) da fila.")
+                    favoritos = refresh_favoritos_imap(client, store, pasta, pasta)
+                    if favoritos:
+                        print(f"[{pasta}] {favoritos} favorito(s) atualizado(s).")
 
                 store.set_folder_meta(pasta, result.uidvalidity, result.ultimo_uid)
                 total_novos += novos_pasta
@@ -1018,8 +1051,9 @@ def cmd_accounts_add(
 
         if not secrets.disponivel():
             print(
-                "aviso: keyring (secret-tool/libsecret) indisponível — a senha "
-                "não pode ser guardada. Instale libsecret e rode de novo."
+                "aviso: keyring (pass/gpg) indisponível — a senha "
+                "não pode ser guardada. Confira se `pass` está instalado e se "
+                "~/.password-store/apolo/.gpg-id existe."
             )
             return 0
         senha = getpass.getpass(f"Senha (ou senha de app) para {username}: ")

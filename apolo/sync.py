@@ -23,7 +23,7 @@ from apolo.ai.ollama import OllamaClient
 from apolo.clean import clean_for_classification, message_to_text
 from apolo.config import Config, load_accounts
 from apolo.fetch.imap import BridgeClient
-from apolo.rules.engine import ACAO_LIXEIRA, RuleEngine, acao_efetiva, eh_recente
+from apolo.rules.engine import ACAO_LIXEIRA, ACAO_REVISAR, RuleEngine, acao_efetiva, eh_recente
 from apolo.storage.db import STATUS_AGUARDANDO, STATUS_CLASSIFICADO, Storage
 from apolo.verify import VerifyConfig, apply_ia_decision
 
@@ -52,6 +52,7 @@ class SyncItem:
     categoria: str = ""
     sera_analisado: bool = False  # regra_casada == "default": ainda vai pro Ollama
     provider_id: str | None = None
+    favorito: bool = False
 
 
 def run_sync(
@@ -149,6 +150,43 @@ def _classificar_novo(engine, remetente, assunto, list_unsubscribe):
     return decisao, novo_status
 
 
+def refresh_favoritos_imap(client, store, pasta_db: str, pasta: str) -> int:
+    """Reconfere \\Flagged dos e-mails ainda pendentes nessa pasta.
+
+    O favorito só é capturado no FETCH do insert original (ver
+    `BridgeClient._fetch_headers`) — quem favorita um e-mail DEPOIS que o
+    Apolo já o sincronizou ficaria com o estado velho pra sempre sem isso.
+    Um único UID SEARCH FLAGGED cobre a pasta inteira, então o custo não
+    cresce com o tamanho da fila pendente. Devolve quantos mudaram.
+    """
+    pendentes = store.pending_rows(pasta_db)
+    if not pendentes:
+        return 0
+    flagged = client.flagged_uids(pasta)
+    atualizados = 0
+    for r in pendentes:
+        novo = r["uid"] in flagged
+        if bool(r["favorito"]) != novo:
+            store.update_favorito(pasta=pasta_db, uidvalidity=r["uidvalidity"], uid=r["uid"], favorito=novo)
+            atualizados += 1
+    return atualizados
+
+
+def refresh_favoritos_gmail(client, store, pasta_db: str, pasta: str) -> int:
+    """Mesma ideia de `refresh_favoritos_imap`, via label STARRED do Gmail."""
+    pendentes = [r for r in store.pending_rows(pasta_db) if r["provider_id"]]
+    if not pendentes:
+        return 0
+    starred = client.starred_ids(pasta)
+    atualizados = 0
+    for r in pendentes:
+        novo = r["provider_id"] in starred
+        if bool(r["favorito"]) != novo:
+            store.update_favorito(pasta=pasta_db, uidvalidity=r["uidvalidity"], uid=r["uid"], favorito=novo)
+            atualizados += 1
+    return atualizados
+
+
 def _sync_imap_pasta(
     store, engine, ollama, verify_config, ai_ready, client, pasta, limit, on_event, *,
     ai_max_dias: int = 90, conta: str = "proton", pasta_db: str | None = None,
@@ -186,10 +224,15 @@ def _sync_imap_pasta(
         store.insert_email(
             conta=conta, pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
             message_id=m.message_id, remetente=m.remetente, assunto=m.assunto, data=m.data,
+            favorito=m.favorito,
         )
         decisao, novo_status = _classificar_novo(engine, m.remetente, m.assunto, m.list_unsubscribe)
         recente = eh_recente(m.data, ai_max_dias)
         efetiva = acao_efetiva(decisao, ai_ready, recente)
+        if m.favorito and efetiva == ACAO_LIXEIRA:
+            # Favoritado no Proton/Gmail: nunca some sozinho pelo auto-envio —
+            # cai pra revisão manual, onde o dono vê o aviso antes de excluir.
+            efetiva = ACAO_REVISAR
         store.classify_email(
             pasta=pasta_db, uidvalidity=uidvalidity, uid=m.uid,
             status=novo_status, categoria=decisao.categoria,
@@ -211,6 +254,7 @@ def _sync_imap_pasta(
             remetente=m.remetente, assunto=m.assunto, data=m.data,
             status=efetiva, categoria=decisao.categoria,
             sera_analisado=(decisao.regra_casada == "default" and ai_ready and recente),
+            favorito=m.favorito,
         )
         on_event("item", item)
         if item.sera_analisado:
@@ -246,6 +290,10 @@ def _sync_imap_pasta(
         )
         if resultado.lixeira:
             on_event("auto_lixeira", conta=conta, pasta=pasta_db, quantidade=resultado.lixeira)
+
+    favoritos_atualizados = refresh_favoritos_imap(client, store, pasta_db, pasta)
+    if favoritos_atualizados:
+        on_event("favoritos", conta=conta, pasta=pasta_db, quantidade=favoritos_atualizados)
 
     meta = store.get_folder_meta(pasta_db)
     prev_last_uid = meta[1] if meta else 0
@@ -296,11 +344,15 @@ def _sync_gmail_pasta(
         store.insert_email(
             conta=conta_id, pasta=pasta_db, uidvalidity=1, uid=m.uid,
             message_id=m.message_id, remetente=m.remetente, assunto=m.assunto, data=m.data,
-            provider_id=m.provider_id,
+            provider_id=m.provider_id, favorito=m.favorito,
         )
         decisao, novo_status = _classificar_novo(engine, m.remetente, m.assunto, m.list_unsubscribe)
         recente = eh_recente(m.data, ai_max_dias)
         efetiva = acao_efetiva(decisao, ai_ready, recente)
+        if m.favorito and efetiva == ACAO_LIXEIRA:
+            # Favoritado no Gmail: nunca some sozinho pelo auto-envio — cai
+            # pra revisão manual, onde o dono vê o aviso antes de excluir.
+            efetiva = ACAO_REVISAR
         store.classify_email(
             pasta=pasta_db, uidvalidity=1, uid=m.uid,
             status=novo_status, categoria=decisao.categoria,
@@ -320,6 +372,7 @@ def _sync_gmail_pasta(
             remetente=m.remetente, assunto=m.assunto, data=m.data,
             status=efetiva, categoria=decisao.categoria,
             sera_analisado=(decisao.regra_casada == "default" and ai_ready and recente),
+            favorito=m.favorito,
         )
         on_event("item", item)
         if item.sera_analisado:
@@ -351,6 +404,10 @@ def _sync_gmail_pasta(
         resultado = dispatch_lixeira_gmail(client, store, auto_lixeira_itens, origem="auto")
         if resultado.lixeira:
             on_event("auto_lixeira", conta=conta_id, pasta=pasta_db, quantidade=resultado.lixeira)
+
+    favoritos_atualizados = refresh_favoritos_gmail(client, store, pasta_db, pasta)
+    if favoritos_atualizados:
+        on_event("favoritos", conta=conta_id, pasta=pasta_db, quantidade=favoritos_atualizados)
 
     meta = store.get_folder_meta(pasta_db)
     prev_last_uid = meta[1] if meta else 0

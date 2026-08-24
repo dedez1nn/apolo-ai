@@ -280,8 +280,22 @@ Screen {
 }
 
 /* ======================= MODAIS ======================= */
-AddRuleModal, EditRuleModal, RunModal, CodeModal, DispatchModal, GmailSetupModal, ImapSetupModal, EmailPreviewModal {
+AddRuleModal, EditRuleModal, RunModal, CodeModal, DispatchModal, GmailSetupModal, ImapSetupModal, EmailPreviewModal, ConfirmModal {
     align: center middle;
+}
+
+#confirm-box {
+    width: 60;
+    max-width: 90%;
+    height: auto;
+    padding: 1 2;
+    border: round $warning;
+    background: $panel;
+}
+
+#confirm-msg {
+    padding: 0 0 1 0;
+    color: $foreground;
 }
 
 #gmail-box, #imap-box {

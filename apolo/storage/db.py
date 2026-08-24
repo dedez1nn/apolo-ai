@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS emails (
     processado_em  TEXT,
     provider_id    TEXT,
     origem_despacho TEXT,
+    favorito       INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (pasta, uidvalidity, uid)
 );
 
@@ -83,6 +84,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE emails ADD COLUMN provider_id TEXT")
     if "origem_despacho" not in cols_emails:
         conn.execute("ALTER TABLE emails ADD COLUMN origem_despacho TEXT")
+    if "favorito" not in cols_emails:
+        conn.execute("ALTER TABLE emails ADD COLUMN favorito INTEGER NOT NULL DEFAULT 0")
 
     cols_acoes = {r[1] for r in conn.execute("PRAGMA table_info(acoes)").fetchall()}
     if "conta" not in cols_acoes:
@@ -227,6 +230,7 @@ class Storage:
         status: str = STATUS_NOVO,
         conta: str = "proton",
         provider_id: str | None = None,
+        favorito: bool = False,
     ) -> bool:
         """Insere um email novo. Idempotente: ignora se o UID já existe.
 
@@ -237,8 +241,8 @@ class Storage:
                 """
                 INSERT OR IGNORE INTO emails
                     (conta, pasta, uidvalidity, uid, message_id, remetente,
-                     assunto, data, status, processado_em, provider_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     assunto, data, status, processado_em, provider_id, favorito)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conta,
@@ -252,6 +256,7 @@ class Storage:
                     status,
                     _now(),
                     provider_id,
+                    int(favorito),
                 ),
             )
             return cur.rowcount > 0
@@ -341,7 +346,7 @@ class Storage:
         rows = self.conn.execute(
             """
             SELECT conta, pasta, uidvalidity, uid, message_id, remetente, assunto,
-                   data, categoria, acao_sugerida, regra_casada, provider_id
+                   data, categoria, acao_sugerida, regra_casada, provider_id, favorito
               FROM emails
              WHERE status = ?
             """,
@@ -436,11 +441,21 @@ class Storage:
         """
         return self.conn.execute(
             """
-            SELECT uid, uidvalidity, provider_id FROM emails
+            SELECT uid, uidvalidity, provider_id, favorito FROM emails
              WHERE pasta = ? AND status NOT IN (?, ?)
             """,
             (pasta, STATUS_DESPACHADO, STATUS_REMOVIDO),
         ).fetchall()
+
+    def update_favorito(self, *, pasta: str, uidvalidity: int, uid: int, favorito: bool) -> None:
+        """Corrige o `favorito` de um email já sincronizado — pego só no insert
+        original, então quem favorita depois precisa dessa reconferência (ver
+        `apolo.sync.refresh_favoritos_imap`/`refresh_favoritos_gmail`)."""
+        with self._tx() as conn:
+            conn.execute(
+                "UPDATE emails SET favorito = ? WHERE pasta = ? AND uidvalidity = ? AND uid = ?",
+                (int(favorito), pasta, uidvalidity, uid),
+            )
 
     def mark_removed(self, *, pasta: str, uidvalidity: int, uid: int) -> None:
         """Email saiu da pasta de origem por fora do Apolo (lixeira/arquivado
