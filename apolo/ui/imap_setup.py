@@ -150,7 +150,7 @@ class ImapSetupModal(ModalScreen):
 
         if not secrets.disponivel() and senha:
             msg.update(
-                f"[{COR_LIXEIRA}]keyring (secret-tool/libsecret) indisponível — "
+                f"[{COR_LIXEIRA}]keyring (pass/gpg) indisponível — "
                 f"a senha não pode ser guardada.[/]"
             )
             return

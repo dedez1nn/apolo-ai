@@ -1,8 +1,10 @@
 """Extração de código/link de confirmação do corpo de um email.
 
 O dono seleciona um email na fila ("pegar código") e a UI puxa o corpo, roda
-estas funções e oferece os candidatos pra copiar. Tudo determinístico e stdlib
-(`re`, `subprocess`) — nada de IA aqui: é casamento de padrão simples.
+estas funções e oferece os candidatos pra copiar. A extração em si é
+determinística e stdlib (`re`) — nada de IA aqui: é casamento de padrão
+simples. Copiar pro clipboard delega pro backend de `apolo.platform`
+(`apolo/platform/clipboard.py`).
 
 Dois tipos de candidato:
   - **código**: 6 dígitos (com ou sem separador, ex. `123-456`), 4–8 dígitos
@@ -17,8 +19,6 @@ números (preços, datas, telefones).
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 from dataclasses import dataclass
 
 # Pistas (pt + en) que costumam aparecer perto de um código de verificação.
@@ -120,22 +120,11 @@ def extract_candidates(text: str, *, max_each: int = 6) -> list[Candidate]:
 
 
 def copy_to_clipboard(text: str) -> bool:
-    """Copia `text` pro clipboard. Tenta wl-copy (Wayland), xclip, xsel.
+    """Copia `text` pro clipboard do sistema.
 
-    Devolve True se algum copiou; False se nenhum binário existe ou todos
-    falharam (a UI avisa o dono).
+    Devolve True se o backend deste SO conseguiu; False se nenhum serviu (a
+    UI avisa o dono). Ver `apolo/platform/clipboard.py`.
     """
-    candidatos = (
-        ["wl-copy"],
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "-ib"],
-    )
-    for cmd in candidatos:
-        if not shutil.which(cmd[0]):
-            continue
-        try:
-            subprocess.run(cmd, input=text.encode(), check=True, timeout=5)
-            return True
-        except Exception:
-            continue
-    return False
+    from apolo.platform import get_clipboard
+
+    return get_clipboard().copy(text)

@@ -1,109 +1,41 @@
-"""Controle do systemd timer (user) — usado pelo `apolo setup` e pela UI.
+"""Agendamento em segundo plano — API pública estável do Apolo.
 
-Render das units a partir dos templates em `systemd/`, detectando interpretador e
-raiz do projeto na hora (não chumba caminho nem venv). Tudo stdlib.
+Delega pro backend de `apolo.platform` conforme o sistema operacional (hoje só
+Linux, via systemd --user — ver `apolo/platform/linux/scheduler.py`).
+`INTERVALOS`/`INTERVALO_PADRAO` não são específicos de SO nenhum (são só as
+opções mostradas na tela de Configurações), por isso ficam aqui e não no
+backend.
 """
 
 from __future__ import annotations
 
-import re
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 
-_TEMPLATE_DIR = Path(__file__).resolve().parent / "systemd"
-_USER_UNIT_DIR = Path("~/.config/systemd/user").expanduser()
+from apolo.platform import get_scheduler
+from apolo.platform.linux.scheduler import _systemctl  # usado direto por cli.py (daemon-reload)
 
 # Intervalos oferecidos na UI. O setup aceita qualquer valor de uma unidade só
-# (Nmin/Nh/Ns — ver `_on_calendar_for`), não qualquer time-span do systemd
-# (tipo "1h30min" combinado); a UI só mostra estes seis.
+# (Nmin/Nh/Ns — ver o backend), não qualquer time-span combinado do systemd
+# (tipo "1h30min"); a UI só mostra estes seis.
 INTERVALOS = ["5min", "10min", "15min", "30min", "1h", "2h"]
 INTERVALO_PADRAO = "15min"
 
-# Tradução pra sintaxe OnCalendar (relógio de parede) — ver apolo.timer sobre
-# por que não é mais OnBootSec/OnUnitActiveSec (monotônico). "1h" tem forma
-# canônica (hourly); o resto vira "campo/passo" — sintaxe válida mesmo quando
-# o passo não divide a unidade inteiramente (ex.: "*:0/7" pra 7min).
-_ON_CALENDAR_ESPECIAIS = {"1h": "hourly"}
-_INTERVALO_RE = re.compile(r"^(\d+)(min|h|s)$")
-
-
-def _on_calendar_for(interval: str) -> str:
-    if interval in _ON_CALENDAR_ESPECIAIS:
-        return _ON_CALENDAR_ESPECIAIS[interval]
-    m = _INTERVALO_RE.match(interval)
-    if not m:
-        raise ValueError(
-            f"intervalo {interval!r} não reconhecido — use algo como '15min', '1h' ou '30s' "
-            "(uma unidade só; não combine tipo '1h30min')."
-        )
-    n, unidade = m.group(1), m.group(2)
-    if unidade == "min":
-        return f"*:0/{n}"
-    if unidade == "h":
-        return f"0/{n}:00:00"
-    return f"*:*:0/{n}"  # s
-
-
-def _systemctl(*args: str) -> tuple[int, str]:
-    """Roda `systemctl --user ...`; devolve (rc, saída). rc 127 se ausente."""
-    if shutil.which("systemctl") is None:
-        return 127, ""
-    p = subprocess.run(
-        ["systemctl", "--user", *args], capture_output=True, text=True, check=False
-    )
-    return p.returncode, (p.stdout or p.stderr).strip()
-
 
 def timer_ativo() -> bool:
-    _, out = _systemctl("is-active", "apolo.timer")
-    return out == "active"
+    return get_scheduler().timer_ativo()
 
 
 def intervalo_atual() -> str | None:
-    """Lê o intervalo original (comentário "# Interval=") da unit instalada."""
-    unit = _USER_UNIT_DIR / "apolo.timer"
-    if not unit.is_file():
-        return None
-    for raw in unit.read_text(encoding="utf-8").splitlines():
-        linha = raw.strip()
-        if linha.startswith("# Interval="):
-            return linha.split("=", 1)[1].strip()
-    return None
+    return get_scheduler().intervalo_atual()
 
 
 def escrever_units(interval: str) -> list[Path]:
-    """Renderiza apolo.service + apolo.timer em ~/.config/systemd/user."""
-    workdir = Path(__file__).resolve().parent.parent
-    campos = {
-        "python": sys.executable,
-        "workdir": str(workdir),
-        "interval": interval,
-        "on_calendar": _on_calendar_for(interval),
-    }
-    _USER_UNIT_DIR.mkdir(parents=True, exist_ok=True)
-    escritos = []
-    for nome in ("apolo.service", "apolo.timer"):
-        template = (_TEMPLATE_DIR / nome).read_text(encoding="utf-8")
-        destino = _USER_UNIT_DIR / nome
-        destino.write_text(template.format(**campos), encoding="utf-8")
-        escritos.append(destino)
-    return escritos
+    return get_scheduler().escrever_units(interval)
 
 
 def ativar(interval: str) -> str:
-    """Escreve as units e liga o timer. Reentrante (regrava pra trocar intervalo)."""
-    escrever_units(interval)
-    if shutil.which("systemctl") is None:
-        return "systemctl ausente — units escritas, não ativadas."
-    _systemctl("daemon-reload")
-    _systemctl("enable", "--now", "apolo.timer")
-    return f"timer ativo — a cada {interval}."
+    return get_scheduler().ativar(interval)
 
 
 def desativar() -> str:
-    if shutil.which("systemctl") is None:
-        return "systemctl ausente."
-    _systemctl("disable", "--now", "apolo.timer")
-    return "timer desativado."
+    return get_scheduler().desativar()

@@ -11,9 +11,6 @@ vale a partir da próxima passada (`apolo run`), não no processo já aberto.
 
 from __future__ import annotations
 
-import shutil
-import subprocess
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
@@ -31,26 +28,16 @@ def _bool_env(v: bool) -> str:
 
 
 def _clipboard() -> str | None:
-    """Lê o clipboard do sistema. None se nenhuma ferramenta servir.
+    """Lê o clipboard do sistema. None se nenhum backend servir.
 
     Colar dentro da TUI (kitty -e) depende do Ctrl+Shift+V do terminal e do
-    bracketed-paste — frágil em campo de senha. Ler o clipboard aqui (wl-paste
-    no Wayland, xclip/xsel no X11) contorna isso de vez.
+    bracketed-paste — frágil em campo de senha. Ler o clipboard aqui contorna
+    isso de vez. Delega pro backend de `apolo.platform`
+    (`apolo/platform/clipboard.py`).
     """
-    for cmd in (
-        ["wl-paste", "-n"],
-        ["xclip", "-selection", "clipboard", "-o"],
-        ["xsel", "-b"],
-    ):
-        if shutil.which(cmd[0]) is None:
-            continue
-        try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=False)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if p.returncode == 0:
-            return p.stdout
-    return None
+    from apolo.platform import get_clipboard
+
+    return get_clipboard().paste()
 
 
 class SettingsScreen(Screen):
@@ -197,13 +184,13 @@ class SettingsScreen(Screen):
             except Exception as e:  # não derruba a tela
                 erros.append(f"timer: {e}")
 
-        # 2a. Senha do Bridge -> keyring do SO (libsecret). Vazia = manter a atual;
-        # só grava quando o dono digita uma nova.
+        # 2a. Senha do Bridge -> pass (GPG, chave dedicada). Vazia = manter a
+        # atual; só grava quando o dono digita uma nova.
         if novo["senha"]:
             if secrets.store_password(novo["senha"]):
-                feitos.append("senha → keyring")
+                feitos.append("senha → pass")
             else:
-                erros.append("senha: keyring indisponível (secret-tool?)")
+                erros.append("senha: pass indisponível (chave apolo/ ausente?)")
 
         # 2b. Usuário do Bridge + IA -> .env (preserva o resto). A senha NÃO vai
         # pro .env — fica só no keyring.

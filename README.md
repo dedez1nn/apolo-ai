@@ -6,7 +6,8 @@ pessoal, na própria máquina — lê o Proton Mail via **Proton Bridge** (IMAP 
 
 Documentação: arquitetura e princípios em [`docs/apolo.md`](docs/apolo.md); a
 interface gráfica em [`docs/ui.md`](docs/ui.md); o botão da Waybar em
-[`docs/waybar.md`](docs/waybar.md).
+[`docs/waybar.md`](docs/waybar.md); como as senhas são guardadas em
+[`docs/secrets.md`](docs/secrets.md).
 
 ## Estado atual — passos 1 a 5 do roadmap
 
@@ -21,6 +22,7 @@ apolo/
   __init__.py
   config.py            # credenciais/Bridge via env + .env (parser stdlib)
   config_writer.py     # escrita parcial e atômica do .env (UI de configurações)
+  secrets.py           # senha do Bridge/IMAP via pass+GPG — ver docs/secrets.md
   cli.py               # run / status / review / block / allow / rules / setup
   clean.py             # HTML/CSS -> texto limpo (passo 1.5)
   actions.py           # despacha a fila: move pra Trash + loga (passo 3)
