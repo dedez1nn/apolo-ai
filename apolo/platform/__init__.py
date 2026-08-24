@@ -13,15 +13,17 @@ delegam pra `get_notifier()`/`get_scheduler()`/`get_secret_store()`/
 um SO novo) sem tocar em nada fora deste pacote.
 
 Estado dos backends por preocupação:
-  - `Notifier`/`Clipboard`: Linux, Windows e macOS — `_familia()` escolhe.
-  - `Scheduler`/`SecretStore`: só Linux por enquanto (systemd e `pass`
-    dependem de mais decisão de produto — `apolo run --loop` já cobre o caso
-    de uso do Scheduler em qualquer SO nesse meio-tempo). `get_scheduler()`/
-    `get_secret_store()` sempre devolvem o backend Linux; como cada método já
-    checa `shutil.which(...)` antes de qualquer chamada, isso não muda o
-    comportamento observável num Windows/macOS de hoje: sem o binário, o
-    método já devolve `None`/`False`, exatamente como devolveria um backend
-    "não implementado" de verdade.
+  - `Notifier`/`Clipboard`/`SecretStore`: Linux, Windows e macOS —
+    `_familia()` escolhe. `SecretStore` em Windows/macOS usa `keyring` (PyPI,
+    dependência opcional — só importada se um dos dois backends for de fato
+    escolhido; ver `apolo/platform/_keyring.py`); no Linux continua sendo
+    `pass` + chave GPG dedicada, de propósito (ver docs/secrets.md).
+  - `Scheduler`: só Linux por enquanto (agendar via systemd/Task Scheduler/
+    launchd é decisão de produto separada — `apolo run --loop` já cobre o
+    caso de uso em qualquer SO nesse meio-tempo). `get_scheduler()` sempre
+    devolve o backend Linux; como cada método já checa `shutil.which(...)`
+    antes de qualquer chamada, isso não muda o comportamento observável num
+    Windows/macOS de hoje.
 """
 
 from __future__ import annotations
@@ -68,9 +70,18 @@ def get_scheduler() -> Scheduler:
 
 
 def get_secret_store() -> SecretStore:
+    familia = _familia()
+    if familia == "win32":
+        from apolo.platform.win32.secret_store import Win32SecretStore
+
+        return Win32SecretStore()
+    if familia == "darwin":
+        from apolo.platform.darwin.secret_store import DarwinSecretStore
+
+        return DarwinSecretStore()
     from apolo.platform.linux.secret_store import LinuxSecretStore
 
-    return LinuxSecretStore()  # único backend por enquanto — ver docstring do módulo
+    return LinuxSecretStore()
 
 
 def get_clipboard() -> Clipboard:
