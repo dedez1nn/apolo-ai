@@ -68,8 +68,10 @@ class HubScreen(Screen):
     BINDINGS = [
         Binding("q,escape", "sair", "sair"),
         Binding("enter", "abrir", "abrir", show=True),
-        Binding("up,k", "cursor_up", "cima", show=False),
-        Binding("down,j", "cursor_down", "baixo", show=False),
+        # priority=True: sem isso, o ListView focado intercepta "up"/"down"
+        # com seu próprio action_cursor_up/down (sem wrap) antes de chegar aqui.
+        Binding("up,k", "cursor_up", "cima", show=False, priority=True),
+        Binding("down,j", "cursor_down", "baixo", show=False, priority=True),
         Binding("i", "toggle_ia", "IA liga/desliga", show=True),
     ]
 
@@ -426,10 +428,22 @@ class HubScreen(Screen):
         self.query_one("#mast-stats", Static).update(self._stats())
         menu = self.query_one("#hub-menu", ListView)
         idx = menu.index
-        menu.clear()
-        menu.extend(self._itens())
-        if idx is not None:
-            menu.index = idx
+        # clear()/extend() são assíncronos por baixo dos panos (o remove/mount
+        # só termina depois de o DOM processar mensagens pendentes) — setar o
+        # index synchronamente logo em seguida podia acabar mexendo num item
+        # antigo que ainda não tinha saído da lista. O worker abaixo garante
+        # que a troca já terminou de verdade antes de restaurar a seleção.
+        self.run_worker(self._atualizar_menu(menu, idx), exclusive=True, group="hub-atualizar")
+
+    async def _atualizar_menu(self, menu: ListView, idx: int | None) -> None:
+        await menu.clear()
+        await menu.extend(self._itens())
+        if idx is not None and len(menu):
+            # Mesmo com o número certo, os itens são objetos novos — sem
+            # passar por None antes, o Textual não dispara watch_index (valor
+            # "não mudou") e o MenuItem novo nunca recebe highlighted=True.
+            menu.index = None
+            menu.index = min(idx, len(menu) - 1)
         item = menu.highlighted_child
         if isinstance(item, MenuItem):
             self._render_detalhe(item.key_id)
@@ -445,10 +459,16 @@ class HubScreen(Screen):
             self._rotear(event.item.key_id)
 
     def action_cursor_up(self) -> None:
-        self.query_one("#hub-menu", ListView).action_cursor_up()
+        # ListView.action_cursor_up nativo não dá a volta (wrap=False) — refaz
+        # a conta aqui pra ciclar do primeiro item de volta pro último.
+        menu = self.query_one("#hub-menu", ListView)
+        if menu.index is not None and len(menu):
+            menu.index = (menu.index - 1) % len(menu)
 
     def action_cursor_down(self) -> None:
-        self.query_one("#hub-menu", ListView).action_cursor_down()
+        menu = self.query_one("#hub-menu", ListView)
+        if menu.index is not None and len(menu):
+            menu.index = (menu.index + 1) % len(menu)
 
     def action_sair(self) -> None:
         self.app.exit()
