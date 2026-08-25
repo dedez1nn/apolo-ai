@@ -1,0 +1,4 @@
+# Dependências só do lançador da barra de menu (macos/apolo_tray.py) — não
+# tem relação com o requirements.txt do Apolo em si.
+rumps>=0.4,<0.5
+py2app>=0.28,<0.29

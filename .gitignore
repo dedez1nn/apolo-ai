@@ -10,6 +10,13 @@ windows/build/
 windows/dist/
 windows/*.spec
 
+# Build do lançador macOS (macos/build.sh)
+macos/.buildvenv/
+macos/build/
+macos/dist/
+macos/apolo.iconset/
+macos/apolo.icns
+
 # Caches de ferramentas
 .pytest_cache/
 .ruff_cache/

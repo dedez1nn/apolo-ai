@@ -2,8 +2,18 @@
 
 Equivalente Windows do botão da Waybar no Linux (ver
 [`../docs/waybar.md`](../docs/waybar.md)): um ícone clicável que abre
-`apolo review` num console novo. Não faz parte do núcleo do Apolo — é
-puramente um lançador.
+`apolo review` num console novo e liga o Proton Bridge quando ele estiver
+desligado. Não faz parte do núcleo do Apolo — é puramente um lançador.
+
+## Por que "Ligar Proton Bridge" existe
+
+O Bridge **não** liga sozinho no login por padrão. Sem ele rodando, só
+contas Gmail funcionam no Apolo — contas Proton dependem do IMAP local que
+só o Bridge expõe. O item de menu testa a conexão em
+`APOLO_IMAP_HOST:APOLO_IMAP_PORT` (lido do `.env` do projeto) e, se não
+responder, procura o `.exe` do Bridge nos caminhos de instalação padrão do
+Windows e abre. Se não achar em nenhum (instalação fora do padrão), avisa
+pra abrir manualmente.
 
 ## Usar o `.exe` pronto
 
@@ -13,8 +23,11 @@ puramente um lançador.
    olhando a própria pasta em busca de `.venv\Scripts\python.exe`; se não
    achar ali, tenta a pasta pai (útil se você preferir manter os dois dentro
    de `windows\` em vez de mover pra raiz).
-3. Dê duplo clique. O ícone aparece na bandeja do sistema; clique duplo nele
-   (ou "Abrir revisão" no menu) abre um console com `apolo review`.
+3. Dê duplo clique. O ícone aparece na bandeja do sistema:
+   - clique duplo (ou "Abrir revisão" no menu) abre um console com
+     `apolo review`;
+   - "Ligar Proton Bridge" (o texto muda pra "Bridge: rodando ✓" quando ele
+     já está de pé) tenta ligar o Bridge.
 
 Sem `.venv\Scripts\python.exe`, cai no `python` do `PATH` — funciona, mas sem
 o Textual instalado a UI não abre (rode o setup do `../README.md` primeiro).

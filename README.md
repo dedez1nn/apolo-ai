@@ -144,9 +144,11 @@ depender de nada além do Python — `apolo setup` (systemd) continua sendo a
 forma "de verdade" de agendar num Linux com systemd --user, mas deixa de ser
 pré-requisito pra usar o Apolo em segundo plano. Notificação de desktop
 (`apolo/notify.py`) e clipboard (`apolo/extract.py`) já têm backend nativo
-pra Linux, Windows e macOS — ver `apolo/platform/`. No Windows, o
-equivalente ao botão da Waybar (ver [`docs/waybar.md`](docs/waybar.md)) é um
-ícone na bandeja do sistema — ver [`windows/`](windows/).
+pra Linux, Windows e macOS — ver `apolo/platform/`. O equivalente ao botão
+da Waybar (ver [`docs/waybar.md`](docs/waybar.md)) é um ícone de bandeja no
+Windows ([`windows/`](windows/)) e um item de barra de menu no macOS
+([`macos/`](macos/)) — ambos também ligam o Proton Bridge quando ele estiver
+desligado (sem ele, só contas Gmail funcionam).
 
 ### Problemas de portabilidade noutro SO
 
