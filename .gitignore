@@ -10,6 +10,7 @@ windows/build/
 windows/dist/
 windows/*.spec
 windows/Apolo.exe
+windows/apolo_tray.log
 Apolo.lnk
 
 # Build do lançador macOS (macos/build.sh)

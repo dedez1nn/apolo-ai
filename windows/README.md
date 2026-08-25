@@ -63,6 +63,16 @@ encerra o Apolo — o ícone continua ali, e pelo menu dele dá pra:
 Sem `.venv\Scripts\python.exe`, cai no `python` do `PATH` — funciona, mas sem
 o Textual instalado a UI não abre (rode o setup do `../README.md` primeiro).
 
+## Se nada acontecer ao clicar (nem console, nem erro visível)
+
+Como é `--windowed` (sem console), qualquer erro na inicialização — falha
+ao importar `pystray`/`Pillow` no `.exe`, ícone não encontrado, o `Popen`
+que abriria a revisão falhando — morre em silêncio, sem traceback visível
+em lugar nenhum. Todo esse caminho tem log em **`windows\apolo_tray.log`**
+(criado do lado do `.exe` assim que ele roda, uma linha por passo). Depois
+de tentar abrir, olhe esse arquivo — ele mostra até onde chegou antes de
+travar.
+
 Rodar `build.bat` de novo (pra atualizar o `.exe`) é seguro: sobrescreve o
 `.exe` e reaponta o atalho, nada duplica.
 
