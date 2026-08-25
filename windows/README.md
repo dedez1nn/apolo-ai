@@ -21,14 +21,23 @@ O PyInstaller **não faz cross-compile**: precisa rodar numa máquina Windows
 de verdade (não dá pra montar por aqui, num ambiente Linux). É só dar duplo
 clique em `build.bat` — ele:
 
-1. Cria um venv de build isolado (`.buildvenv`, separado do `.venv` do
-   projeto) e instala `pystray`/`Pillow`/`pyinstaller`
-   (`requirements.txt` deste diretório).
-2. Empacota `windows\Apolo.exe` com o `apolo.ico` embutido (`--add-data`) —
+1. Cria o **`.venv` do projeto na raiz** (se ainda não existir) e instala
+   `requirements.txt` da raiz — é esse venv que roda o Apolo de verdade
+   (`apolo review`, `apolo run`...). Se já existir, pula essa parte (não
+   reinstala a cada build).
+2. Cria um venv de build isolado (`.buildvenv`, dentro de `windows\`,
+   **diferente** do `.venv` do passo 1) e instala `pystray`/`Pillow`/
+   `pyinstaller` (`requirements.txt` deste diretório) — só ferramenta de
+   empacotamento, não tem nada a ver com rodar o Apolo.
+3. Empacota `windows\Apolo.exe` com o `apolo.ico` embutido (`--add-data`) —
    o `.exe` **fica em `windows\`**, do lado do `.buildvenv`, não vai pra
    raiz do projeto.
-3. Cria um **atalho na raiz do projeto** (`Apolo.lnk`) apontando pro `.exe`
+4. Cria um **atalho na raiz do projeto** (`Apolo.lnk`) apontando pro `.exe`
    em `windows\`, já com o ícone do Apolo.
+
+Ou seja: `build.bat` sozinho já deixa o Apolo pronto pra rodar (falta só o
+`.env` com as credenciais do Bridge — ver `../README.md`) *e* o ícone de
+bandeja, tudo num clique.
 
 A janela do `cmd` fica aberta no final (com `pause`) pra dar tempo de ler o
 resultado ou um eventual erro.

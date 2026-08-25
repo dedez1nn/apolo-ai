@@ -6,6 +6,20 @@ REM Da pra so dar duplo clique neste arquivo.
 
 cd /d "%~dp0"
 
+REM --- venv do projeto (raiz) -- e o que roda "apolo review" de verdade;
+REM sem ele o icone abre mas o clique em "Abrir revisao" quebra na hora.
+REM So cria/instala se ainda nao existir (nao reinstala a cada build).
+if not exist "%~dp0..\.venv\Scripts\python.exe" (
+    echo Criando .venv do projeto ^(raiz^)...
+    python -m venv "%~dp0..\.venv"
+    if errorlevel 1 goto :erro
+    "%~dp0..\.venv\Scripts\python.exe" -m pip install -r "%~dp0..\requirements.txt"
+    if errorlevel 1 goto :erro
+) else (
+    echo .venv do projeto ja existe, pulando.
+)
+
+REM --- venv de build (so pystray/Pillow/pyinstaller, pra empacotar o .exe) ---
 python -m venv .buildvenv
 if errorlevel 1 goto :erro
 
@@ -30,10 +44,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0_make_shortcut.ps1" -T
 if errorlevel 1 goto :erro
 
 echo.
-echo Pronto: windows\Apolo.exe (com o apolo.ico embutido)
-echo Atalho criado na raiz do projeto: Apolo.lnk -- da pra copiar esse atalho
-echo pra Area de Trabalho, Menu Iniciar, onde quiser; o .exe de verdade
-echo continua em windows\, do lado do .venv que ele espera.
+echo Pronto:
+echo   - .venv do projeto (raiz) -- pra rodar o Apolo de verdade
+echo   - windows\Apolo.exe (com o apolo.ico embutido)
+echo   - atalho na raiz do projeto: Apolo.lnk
+echo Copie o atalho (nao o .exe) pra Area de Trabalho, Menu Iniciar, onde
+echo quiser; o .exe de verdade continua em windows\.
 echo.
 pause
 exit /b 0
