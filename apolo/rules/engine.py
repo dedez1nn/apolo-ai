@@ -60,7 +60,7 @@ class Decision:
 
 
 def parse_sender(remetente: str) -> tuple[str, str]:
-    """De '\"KaBuM\" <x@promo.loja-exemplo.com.br>' tira ('x@promo.loja-exemplo.com.br', 'promo.loja-exemplo.com.br')."""
+    """De '\"Loja\" <x@promo.loja-exemplo.com.br>' tira ('x@promo.loja-exemplo.com.br', 'promo.loja-exemplo.com.br')."""
     addr = parseaddr(remetente)[1].lower().strip()
     dominio = addr.rsplit("@", 1)[-1] if "@" in addr else ""
     return addr, dominio
