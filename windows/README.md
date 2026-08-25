@@ -1,9 +1,11 @@
 # Ícone da bandeja (Windows)
 
 Equivalente Windows do botão da Waybar no Linux (ver
-[`../docs/waybar.md`](../docs/waybar.md)): um ícone clicável que abre
-`apolo review` num console novo e liga o Proton Bridge quando ele estiver
-desligado. Não faz parte do núcleo do Apolo — é puramente um lançador.
+[`../docs/waybar.md`](../docs/waybar.md)): clicar no atalho já abre a
+interface de revisão (`apolo review`) num console novo, e sobe um ícone na
+bandeja do sistema que fica disponível depois pra reabrir a revisão ou
+ligar o Proton Bridge. Não faz parte do núcleo do Apolo — é puramente um
+lançador.
 
 ## Por que "Ligar Proton Bridge" existe
 
@@ -48,12 +50,15 @@ preferir. O `.exe` de verdade continua parado em `windows\`, ao lado do
 `.venv\` do projeto (que é onde o script espera achar
 `.venv\Scripts\python.exe`).
 
-Duplo clique no atalho (ou no `.exe` direto): o ícone aparece na bandeja do
-sistema:
-- clique duplo (ou "Abrir revisão" no menu) abre um console com
-  `apolo review`;
+Duplo clique no atalho (ou no `.exe` direto): abre **na hora** um console
+com `apolo review` e sobe o ícone na bandeja do sistema (visível ou
+escondido atrás da seta `^`, perto do relógio). Fechar o console não
+encerra o Apolo — o ícone continua ali, e pelo menu dele dá pra:
+- "Abrir revisão" — reabre o console com `apolo review` (é o item padrão:
+  clique duplo no ícone já dispara direto, sem precisar abrir o menu);
 - "Ligar Proton Bridge" (o texto muda pra "Bridge: rodando ✓" quando ele já
-  está de pé) tenta ligar o Bridge.
+  está de pé) — tenta ligar o Bridge;
+- "Sair" — encerra o ícone de vez.
 
 Sem `.venv\Scripts\python.exe`, cai no `python` do `PATH` — funciona, mas sem
 o Textual instalado a UI não abre (rode o setup do `../README.md` primeiro).

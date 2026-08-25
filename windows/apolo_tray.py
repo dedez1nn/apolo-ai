@@ -2,11 +2,12 @@
 liga o Proton Bridge quando ele estiver desligado.
 
 Equivalente Windows do botão da Waybar no Linux (ver docs/waybar.md): não faz
-parte do núcleo do Apolo, só é um lançador. Clique duplo (ou o item padrão do
-menu) abre um console novo rodando `python -m apolo.cli review`; "Ligar
-Proton Bridge" testa se o Bridge já está escutando e, se não estiver, tenta
-abri-lo — sem o Bridge rodando só contas Gmail funcionam (Proton depende
-dele).
+parte do núcleo do Apolo, só é um lançador. A interface já abre sozinha
+assim que o `.exe` inicia (clique no atalho), sem precisar caçar o ícone da
+bandeja primeiro; o ícone continua disponível depois pra reabrir a revisão
+(clique duplo, ou o item padrão do menu) ou ligar o Bridge — "Ligar Proton
+Bridge" testa se ele já está escutando e, se não estiver, tenta abri-lo, já
+que sem o Bridge rodando só contas Gmail funcionam (Proton depende dele).
 
 Não importa nada de `apolo/` — só chama `python -m apolo.cli review` como
 subprocesso e lê o `.env` na unha (host/porta do Bridge), então o `.exe`
@@ -127,7 +128,7 @@ def _abrir_bridge() -> tuple[bool, str]:
     return False, "Bridge não encontrado nos caminhos padrão. Abra manualmente."
 
 
-def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
+def _lancar_review() -> None:
     project_root = _project_root(_exe_dir())
     python_exe = _python_exe(project_root)
 
@@ -145,6 +146,10 @@ def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
         cwd=str(project_root),
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
+
+
+def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
+    _lancar_review()
 
 
 def ligar_bridge(icon: pystray.Icon, item: pystray.MenuItem) -> None:
@@ -165,6 +170,15 @@ def sair(icon: pystray.Icon, item: pystray.MenuItem) -> None:
     icon.stop()
 
 
+def _setup(icon: pystray.Icon) -> None:
+    # Passar `setup` pro `icon.run()` tira do pystray a responsabilidade de
+    # mostrar o ícone sozinho -- quem faz isso é o próprio `setup` (ver
+    # README do pystray). Esquecer o `visible = True` aqui faz o ícone nunca
+    # aparecer na bandeja.
+    icon.visible = True
+    _lancar_review()
+
+
 def main() -> None:
     icon_path = _resource_dir() / ICON_FILENAME
     image = Image.open(icon_path)
@@ -175,7 +189,10 @@ def main() -> None:
         pystray.MenuItem("Sair", sair),
     )
     icon = pystray.Icon("apolo", image, "Apolo · triagem de emails", menu)
-    icon.run()
+    # Abre a revisão já na largada -- clicar no atalho leva direto à
+    # interface, sem precisar achar e clicar no ícone da bandeja primeiro.
+    # O ícone continua rodando depois pra reabrir a revisão ou ligar o Bridge.
+    icon.run(setup=_setup)
 
 
 if __name__ == "__main__":
