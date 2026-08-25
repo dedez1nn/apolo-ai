@@ -9,6 +9,8 @@ windows/.buildvenv/
 windows/build/
 windows/dist/
 windows/*.spec
+windows/Apolo.exe
+Apolo.lnk
 
 # Build do lançador macOS (macos/build.sh)
 macos/.buildvenv/

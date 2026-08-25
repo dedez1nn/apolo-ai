@@ -15,37 +15,42 @@ responder, procura o `.exe` do Bridge nos caminhos de instalação padrão do
 Windows e abre. Se não achar em nenhum (instalação fora do padrão), avisa
 pra abrir manualmente.
 
-## Usar o `.exe` pronto
+## Gerar e usar
 
-1. Gere `Apolo.exe` (veja "Gerar o `.exe`" abaixo) ou pegue um já gerado.
-2. Copie **só o `Apolo.exe`** (o ícone vai embutido dentro dele) para a
-   **raiz do projeto**, a mesma pasta onde fica `.venv\`. O script detecta o
-   projeto olhando a própria pasta em busca de `.venv\Scripts\python.exe`;
-   se não achar ali, tenta a pasta pai (útil se preferir manter o `.exe`
-   dentro de `windows\` em vez de mover pra raiz).
-3. Dê duplo clique. O ícone aparece na bandeja do sistema:
-   - clique duplo (ou "Abrir revisão" no menu) abre um console com
-     `apolo review`;
-   - "Ligar Proton Bridge" (o texto muda pra "Bridge: rodando ✓" quando ele
-     já está de pé) tenta ligar o Bridge.
+O PyInstaller **não faz cross-compile**: precisa rodar numa máquina Windows
+de verdade (não dá pra montar por aqui, num ambiente Linux). É só dar duplo
+clique em `build.bat` — ele:
+
+1. Cria um venv de build isolado (`.buildvenv`, separado do `.venv` do
+   projeto) e instala `pystray`/`Pillow`/`pyinstaller`
+   (`requirements.txt` deste diretório).
+2. Empacota `windows\Apolo.exe` com o `apolo.ico` embutido (`--add-data`) —
+   o `.exe` **fica em `windows\`**, do lado do `.buildvenv`, não vai pra
+   raiz do projeto.
+3. Cria um **atalho na raiz do projeto** (`Apolo.lnk`) apontando pro `.exe`
+   em `windows\`, já com o ícone do Apolo.
+
+A janela do `cmd` fica aberta no final (com `pause`) pra dar tempo de ler o
+resultado ou um eventual erro.
+
+Depois disso, o atalho `Apolo.lnk` na raiz é o que você usa: copie ele (não
+o `.exe`) pra Área de Trabalho, Menu Iniciar, barra de tarefas — onde
+preferir. O `.exe` de verdade continua parado em `windows\`, ao lado do
+`.venv\` do projeto (que é onde o script espera achar
+`.venv\Scripts\python.exe`).
+
+Duplo clique no atalho (ou no `.exe` direto): o ícone aparece na bandeja do
+sistema:
+- clique duplo (ou "Abrir revisão" no menu) abre um console com
+  `apolo review`;
+- "Ligar Proton Bridge" (o texto muda pra "Bridge: rodando ✓" quando ele já
+  está de pé) tenta ligar o Bridge.
 
 Sem `.venv\Scripts\python.exe`, cai no `python` do `PATH` — funciona, mas sem
 o Textual instalado a UI não abre (rode o setup do `../README.md` primeiro).
 
-## Gerar o `.exe`
-
-O PyInstaller **não faz cross-compile**: o `.exe` precisa ser gerado numa
-máquina Windows de verdade (não dá pra montar por aqui, num ambiente Linux).
-
-```bat
-cd windows
-build.bat
-```
-
-Isso cria um venv de build isolado (`.buildvenv`, separado do `.venv` do
-projeto), instala `pystray`/`Pillow`/`pyinstaller` (`requirements.txt` deste
-diretório) e gera `windows\dist\Apolo.exe` com o `apolo.ico` embutido
-(`--add-data`) — um arquivo só, sem nada solto do lado.
+Rodar `build.bat` de novo (pra atualizar o `.exe`) é seguro: sobrescreve o
+`.exe` e reaponta o atalho, nada duplica.
 
 ## Por que não empacota o `apolo/` inteiro dentro do `.exe`
 
