@@ -4,6 +4,12 @@ __pycache__/
 *.pyo
 .venv/
 
+# Build do lançador Windows (windows/build.bat)
+windows/.buildvenv/
+windows/build/
+windows/dist/
+windows/*.spec
+
 # Caches de ferramentas
 .pytest_cache/
 .ruff_cache/
