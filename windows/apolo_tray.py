@@ -12,6 +12,9 @@ Não importa nada de `apolo/` — só chama `python -m apolo.cli review` como
 subprocesso e lê o `.env` na unha (host/porta do Bridge), então o `.exe`
 gerado por `build.bat` fica pequeno (só empacota pystray + Pillow) e não
 precisa ser reconstruído quando o Apolo muda.
+
+O `apolo.ico` vai embutido dentro do `.exe` (`--add-data` no build.bat) —
+só o `.exe` precisa ir pra raiz do projeto, nada de arquivo solto do lado.
 """
 
 from __future__ import annotations
@@ -28,10 +31,21 @@ from PIL import Image
 ICON_FILENAME = "apolo.ico"
 
 
-def _app_dir() -> Path:
-    """Pasta do .exe (congelado pelo PyInstaller) ou do script .py."""
+def _exe_dir() -> Path:
+    """Pasta onde o .exe está de fato (congelado pelo PyInstaller) ou do
+    script .py — usada pra achar o projeto (.venv), não os recursos."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _resource_dir() -> Path:
+    """Pasta com os recursos embutidos (apolo.ico). No .exe onefile do
+    PyInstaller eles são extraídos num diretório temporário (`sys._MEIPASS`)
+    em cada execução — não é a mesma pasta do .exe."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
     return Path(__file__).resolve().parent
 
 
@@ -114,7 +128,7 @@ def _abrir_bridge() -> tuple[bool, str]:
 
 
 def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
-    project_root = _project_root(_app_dir())
+    project_root = _project_root(_exe_dir())
     python_exe = _python_exe(project_root)
 
     subprocess.Popen(
@@ -125,7 +139,7 @@ def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
 
 
 def ligar_bridge(icon: pystray.Icon, item: pystray.MenuItem) -> None:
-    project_root = _project_root(_app_dir())
+    project_root = _project_root(_exe_dir())
     if _bridge_rodando(project_root):
         icon.notify("Proton Bridge já está rodando.", "Apolo")
         return
@@ -134,7 +148,7 @@ def ligar_bridge(icon: pystray.Icon, item: pystray.MenuItem) -> None:
 
 
 def _texto_bridge(item: pystray.MenuItem) -> str:
-    project_root = _project_root(_app_dir())
+    project_root = _project_root(_exe_dir())
     return "Bridge: rodando ✓" if _bridge_rodando(project_root) else "Ligar Proton Bridge"
 
 
@@ -143,7 +157,7 @@ def sair(icon: pystray.Icon, item: pystray.MenuItem) -> None:
 
 
 def main() -> None:
-    icon_path = _app_dir() / ICON_FILENAME
+    icon_path = _resource_dir() / ICON_FILENAME
     image = Image.open(icon_path)
 
     menu = pystray.Menu(

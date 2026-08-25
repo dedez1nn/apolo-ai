@@ -18,11 +18,11 @@ pra abrir manualmente.
 ## Usar o `.exe` pronto
 
 1. Gere `Apolo.exe` (veja "Gerar o `.exe`" abaixo) ou pegue um já gerado.
-2. Copie **dois arquivos** — `Apolo.exe` e `apolo.ico` — para a **raiz do
-   projeto**, a mesma pasta onde fica `.venv\`. O script detecta o projeto
-   olhando a própria pasta em busca de `.venv\Scripts\python.exe`; se não
-   achar ali, tenta a pasta pai (útil se você preferir manter os dois dentro
-   de `windows\` em vez de mover pra raiz).
+2. Copie **só o `Apolo.exe`** (o ícone vai embutido dentro dele) para a
+   **raiz do projeto**, a mesma pasta onde fica `.venv\`. O script detecta o
+   projeto olhando a própria pasta em busca de `.venv\Scripts\python.exe`;
+   se não achar ali, tenta a pasta pai (útil se preferir manter o `.exe`
+   dentro de `windows\` em vez de mover pra raiz).
 3. Dê duplo clique. O ícone aparece na bandeja do sistema:
    - clique duplo (ou "Abrir revisão" no menu) abre um console com
      `apolo review`;
@@ -44,7 +44,8 @@ build.bat
 
 Isso cria um venv de build isolado (`.buildvenv`, separado do `.venv` do
 projeto), instala `pystray`/`Pillow`/`pyinstaller` (`requirements.txt` deste
-diretório) e gera `windows\dist\Apolo.exe`.
+diretório) e gera `windows\dist\Apolo.exe` com o `apolo.ico` embutido
+(`--add-data`) — um arquivo só, sem nada solto do lado.
 
 ## Por que não empacota o `apolo/` inteiro dentro do `.exe`
 
