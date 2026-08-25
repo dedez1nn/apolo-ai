@@ -1345,6 +1345,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.platform == "win32":
+        # O console do Windows abre com a codepage legada (cp1252 etc.), que
+        # não sabe codificar os glifos Unicode do cabeçalho da UI (ex.: ◈ em
+        # apolo/ui/theme.py) -- derruba a thread de escrita do Textual na
+        # primeira tela e a UI trava sem aviso nenhum. Força UTF-8 antes de
+        # qualquer print/UI rodar; best-effort, não pode virar motivo de crash.
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     args = build_parser().parse_args(argv)
     config = Config.load()
     try:
