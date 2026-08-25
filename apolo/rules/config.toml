@@ -20,8 +20,6 @@ remetentes = [
   # "chefe@empresa.com",
 ]
 dominios = [
-  "portal-academico-exemplo.com",
-  "cofre-exemplo.com",
   #  #]
 
 [blocklist]
