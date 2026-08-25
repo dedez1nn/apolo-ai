@@ -166,12 +166,20 @@ def _lancar_review() -> None:
     # `|| pause`: se `apolo.cli review` quebrar na hora, o console segura a
     # mensagem de erro em vez de fechar sozinho antes de dar tempo de ler.
     comando = f'"{python_exe}" -m apolo.cli review || pause'
+    # Apolo.exe é --windowed (sem console próprio, show-state oculto) -- sem
+    # um STARTUPINFO explícito o Windows propaga esse mesmo estado oculto pro
+    # console novo do CREATE_NEW_CONSOLE, e a UI roda escondida (processo
+    # normal, janela invisível). SW_SHOW força a janela a aparecer.
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 5  # SW_SHOW
     try:
         subprocess.Popen(
             comando,
             shell=True,
             cwd=str(project_root),
             creationflags=subprocess.CREATE_NEW_CONSOLE,
+            startupinfo=startupinfo,
         )
         _log("_lancar_review: Popen disparado sem exceção")
     except Exception:
