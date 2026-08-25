@@ -153,7 +153,23 @@ def _abrir_bridge() -> tuple[bool, str]:
     return False, "Bridge não encontrado nos caminhos padrão. Abra manualmente."
 
 
-def _lancar_review() -> None:
+# Processo do console de review em andamento (None = nenhum rodando).
+# CREATE_NEW_CONSOLE cria um processo totalmente desacoplado -- fechar o
+# ícone da bandeja não mata isso sozinho, então guardamos o handle aqui pra
+# 1) não empilhar uma revisão em cima da outra a cada clique e 2) matar a
+# árvore inteira (cmd.exe + conhost.exe + python.exe) quando o usuário sair.
+_processo_review: subprocess.Popen | None = None
+
+
+def _lancar_review(icon: pystray.Icon | None = None) -> None:
+    global _processo_review
+
+    if _processo_review is not None and _processo_review.poll() is None:
+        _log(f"_lancar_review: já tem revisão rodando (pid={_processo_review.pid}), ignorando clique")
+        if icon is not None:
+            icon.notify("A revisão já está aberta.", "Apolo")
+        return
+
     project_root = _project_root(_exe_dir())
     python_exe = _python_exe(project_root)
     _log(f"_lancar_review: project_root={project_root} python_exe={python_exe}")
@@ -174,21 +190,21 @@ def _lancar_review() -> None:
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startupinfo.wShowWindow = 5  # SW_SHOW
     try:
-        subprocess.Popen(
+        _processo_review = subprocess.Popen(
             comando,
             shell=True,
             cwd=str(project_root),
             creationflags=subprocess.CREATE_NEW_CONSOLE,
             startupinfo=startupinfo,
         )
-        _log("_lancar_review: Popen disparado sem exceção")
+        _log(f"_lancar_review: Popen disparado sem exceção (pid={_processo_review.pid})")
     except Exception:
         _log("_lancar_review: FALHA no Popen:\n" + traceback.format_exc())
 
 
 def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
     _log("menu: Abrir revisão clicado")
-    _lancar_review()
+    _lancar_review(icon)
 
 
 def ligar_bridge(icon: pystray.Icon, item: pystray.MenuItem) -> None:
@@ -208,6 +224,18 @@ def _texto_bridge(item: pystray.MenuItem) -> str:
 
 def sair(icon: pystray.Icon, item: pystray.MenuItem) -> None:
     _log("menu: Sair clicado")
+    if _processo_review is not None and _processo_review.poll() is None:
+        # /T mata a árvore inteira (cmd.exe + conhost.exe + python.exe) --
+        # só terminate()/kill() no Popen mataria o cmd.exe do CREATE_NEW_CONSOLE
+        # e deixaria o python.exe (o processo que importa) órfão rodando.
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(_processo_review.pid), "/T", "/F"],
+                capture_output=True,
+            )
+            _log(f"sair: taskkill na árvore do pid={_processo_review.pid}")
+        except Exception:
+            _log("sair: FALHA no taskkill:\n" + traceback.format_exc())
     icon.stop()
 
 
@@ -218,7 +246,7 @@ def _setup(icon: pystray.Icon) -> None:
     # aparecer na bandeja.
     _log("_setup: chamado")
     icon.visible = True
-    _lancar_review()
+    _lancar_review(icon)
     _log("_setup: concluído")
 
 
