@@ -24,11 +24,13 @@ arriscado escreve em `apolo_tray.log`, do lado do .exe (ver `_log`).
 
 from __future__ import annotations
 
+import ctypes
 import datetime
 import os
 import socket
 import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -183,23 +185,46 @@ def _lancar_review(icon: pystray.Icon | None = None) -> None:
     # mensagem de erro em vez de fechar sozinho antes de dar tempo de ler.
     comando = f'"{python_exe}" -m apolo.cli review || pause'
     # Apolo.exe é --windowed (sem console próprio, show-state oculto) -- sem
-    # um STARTUPINFO explícito o Windows propaga esse mesmo estado oculto pro
+    # forçar visibilidade o Windows propaga esse mesmo estado oculto pro
     # console novo do CREATE_NEW_CONSOLE, e a UI roda escondida (processo
-    # normal, janela invisível). SW_SHOW força a janela a aparecer.
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 5  # SW_SHOW
+    # normal, janela invisível, testado e confirmado com GetWindowVisible).
+    #
+    # STARTUPINFO + STARTF_USESHOWWINDOW/SW_SHOW NÃO resolve isso -- testado
+    # isolado (fora do Apolo, script mínimo com o mesmo padrão) e o console
+    # nasce invisível do mesmo jeito. É uma limitação da combinação
+    # CREATE_NEW_CONSOLE + shell=True, não um bug específico daqui.
+    #
+    # O que funciona: deixar o console nascer normal (com o show-state que
+    # vier) e, já com o processo rodando, anexar nele via AttachConsole e
+    # mandar mostrar pela API do Windows diretamente (GetConsoleWindow +
+    # ShowWindow), em vez de tentar controlar o show-state na criação.
     try:
         _processo_review = subprocess.Popen(
             comando,
             shell=True,
             cwd=str(project_root),
             creationflags=subprocess.CREATE_NEW_CONSOLE,
-            startupinfo=startupinfo,
         )
         _log(f"_lancar_review: Popen disparado sem exceção (pid={_processo_review.pid})")
     except Exception:
         _log("_lancar_review: FALHA no Popen:\n" + traceback.format_exc())
+        return
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        time.sleep(0.3)  # dar tempo do conhost criar a janela do console
+        kernel32.FreeConsole()
+        if kernel32.AttachConsole(_processo_review.pid):
+            hwnd = kernel32.GetConsoleWindow()
+            user32.ShowWindow(hwnd, 5)  # SW_SHOW
+            user32.SetForegroundWindow(hwnd)
+            kernel32.FreeConsole()
+            _log(f"_lancar_review: janela mostrada via AttachConsole (hwnd={hwnd})")
+        else:
+            _log("_lancar_review: AttachConsole falhou, janela pode ficar invisível")
+    except Exception:
+        _log("_lancar_review: FALHA ao mostrar a janela:\n" + traceback.format_exc())
 
 
 def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
@@ -250,7 +275,32 @@ def _setup(icon: pystray.Icon) -> None:
     _log("_setup: concluído")
 
 
+_MUTEX_NOME = "Global\\ApoloTrayMutex"
+_ERROR_ALREADY_EXISTS = 183
+
+
+def _ja_tem_instancia() -> bool:
+    """Mutex nomeado do Windows -- ao contrário de `_processo_review` (que só
+    protege dentro de um mesmo processo), isso detecta OUTRO Apolo.exe já
+    rodando. Sem isso, cada clique repetido no atalho enquanto o primeiro
+    ainda está de pé abre um Apolo.exe + ícone + revisão totalmente novos e
+    paralelos -- visto na prática (3 instâncias simultâneas nos logs)."""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW(None, False, _MUTEX_NOME)
+    return kernel32.GetLastError() == _ERROR_ALREADY_EXISTS
+
+
 def main() -> None:
+    if _ja_tem_instancia():
+        _log("main: outra instância do Apolo já está rodando, abortando")
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0, "O Apolo já está rodando -- veja o ícone na bandeja do sistema.", "Apolo", 0x40
+            )
+        except Exception:
+            pass
+        return
+
     _log("main: iniciando")
     icon_path = _resource_dir() / ICON_FILENAME
     _log(f"main: icon_path={icon_path} existe={icon_path.exists()}")
