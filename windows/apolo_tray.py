@@ -131,8 +131,12 @@ def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
     project_root = _project_root(_exe_dir())
     python_exe = _python_exe(project_root)
 
+    # Via cmd /c ... || pause: se `apolo.cli review` quebrar na hora, o
+    # console segura a mensagem de erro em vez de fechar sozinho antes de
+    # dar tempo de ler (era o que acontecia antes desse ajuste).
+    comando = f'"{python_exe}" -m apolo.cli review || pause'
     subprocess.Popen(
-        [python_exe, "-m", "apolo.cli", "review"],
+        ["cmd", "/c", comando],
         cwd=str(project_root),
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
