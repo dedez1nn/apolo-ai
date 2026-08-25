@@ -9,6 +9,31 @@ interface gráfica em [`docs/ui.md`](docs/ui.md); o botão da Waybar em
 [`docs/waybar.md`](docs/waybar.md); como as senhas são guardadas em
 [`docs/secrets.md`](docs/secrets.md).
 
+## Por que Apolo?
+
+O nome não é aleatório. Apolo é o deus grego associado à ordem, à proporção e
+à harmonia, exatamente o que este projeto tenta impor sobre uma caixa de
+entrada que cresce sem controle: transformar um fluxo disperso de emails numa
+estrutura previsível, com regras, fila e revisão.
+
+Ele também é o deus da luz e, por extensão, do esclarecimento. Separar sinal
+de ruído, tirar da escuridão do "depois eu leio" as poucas mensagens que
+realmente importam, é basicamente trazer clareza pra caixa de entrada.
+
+Há ainda a associação com o conhecimento, a razão e a previsão (o oráculo de
+Delfos). Faz sentido num projeto cujo passo 4 é justamente usar um modelo de
+linguagem pra interpretar e classificar o resíduo que as regras
+determinísticas não resolveram.
+
+Apolo também é lembrado como figura central que coordena esferas diferentes
+(música, medicina, profecia). Aqui ele coordena fontes diferentes de email
+sob a mesma cascata de regras e a mesma fila de revisão, em vez de cada conta
+ser tratada como um mundo à parte.
+
+Por fim, um motivo prático: um deus grego dá uma identidade visual forte
+(lira, arco, coroa de louros, sol), muito mais fácil de estilizar como ícone
+de software do que o envelope genérico de todo cliente de email.
+
 ## Estado atual — passos 1 a 5 do roadmap
 
 Implementado o **backbone** (fetch incremental + SQLite), a **limpeza de corpo
@@ -120,6 +145,31 @@ forma "de verdade" de agendar num Linux com systemd --user, mas deixa de ser
 pré-requisito pra usar o Apolo em segundo plano. Notificação de desktop
 (`apolo/notify.py`) e clipboard (`apolo/extract.py`) já têm backend nativo
 pra Linux, Windows e macOS — ver `apolo/platform/`.
+
+### Problemas de portabilidade noutro SO
+
+O Apolo foi desenvolvido e testado principalmente em Linux. Se algo quebrar
+no Windows ou no macOS (um backend de `apolo/platform/`, o cofre de senha, a
+notificação, o clipboard, o `apolo setup`...), o jeito mais rápido de
+investigar é colar o contexto abaixo numa IA, junto do erro exato:
+
+```
+Estou rodando o Apolo (triador pessoal de emails, Python, repositório
+apolo-ai) no seguinte sistema operacional: [Windows 11 / macOS 14 / etc,
+com versão].
+
+Versão do Python: [python --version]
+Comando que rodei: [ex.: python -m apolo.cli run --loop]
+Erro ou comportamento inesperado: [cole aqui o traceback completo ou a
+descrição do que aconteceu]
+
+Contexto do projeto: o núcleo (fetch/regras/banco) usa só a stdlib do
+Python; funcionalidades que dependem do SO (notificação, clipboard, cofre
+de senha) ficam isoladas em apolo/platform/, com um backend por sistema
+operacional. Me ajude a diagnosticar a causa raiz desse problema de
+portabilidade e sugira uma correção que mantenha essa separação (stdlib no
+núcleo, backend específico do SO isolado em apolo/platform/).
+```
 
 ## Notificações e agendamento (passo 5)
 
