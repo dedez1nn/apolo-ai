@@ -131,12 +131,17 @@ def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
     project_root = _project_root(_exe_dir())
     python_exe = _python_exe(project_root)
 
-    # Via cmd /c ... || pause: se `apolo.cli review` quebrar na hora, o
-    # console segura a mensagem de erro em vez de fechar sozinho antes de
-    # dar tempo de ler (era o que acontecia antes desse ajuste).
+    # shell=True com uma STRING (não uma lista) -- se fosse ["cmd", "/c",
+    # comando], o Popen re-escapa as aspas que já estão dentro de `comando`
+    # (list2cmdline duplica aspas internas), o que quebra o caminho do
+    # python.exe. Com shell=True a string vai direto pro `cmd /c`, sem
+    # reescaping.
+    # `|| pause`: se `apolo.cli review` quebrar na hora, o console segura a
+    # mensagem de erro em vez de fechar sozinho antes de dar tempo de ler.
     comando = f'"{python_exe}" -m apolo.cli review || pause'
     subprocess.Popen(
-        ["cmd", "/c", comando],
+        comando,
+        shell=True,
         cwd=str(project_root),
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
