@@ -2,6 +2,10 @@
 # O núcleo (fetch/rules/ai/storage/actions) e o `apolo run` seguem 100% stdlib
 # no Linux (o cofre de senha usa `pass`, um binário, não uma lib Python).
 flet>=0.86,<0.87
+# Só cosmético: dá nome "apolo ..." pro processo em vez de "python3" genérico
+# em ps/btop/htop (Linux/macOS — no Windows não faz nada, sem prctl
+# equivalente). apolo/cli.py já tolera a ausência (import best-effort).
+setproctitle>=1.3,<2
 # Cofre de senha em Windows (Credential Manager) e macOS (Keychain) — ver
 # apolo/platform/_keyring.py. Marcador de ambiente restringe a instalação a
 # esses dois SOs; no Linux o `pip install` nem baixa esse pacote.

@@ -1345,6 +1345,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Sem isso, `ps`/btop/htop mostram só "python3" -- genérico demais pra
+    # achar o processo num monitor cheio de outra coisa. Só funciona no
+    # Linux/macOS (reescreve a memória do argv do processo); no Windows o
+    # Task Manager sempre mostra "python.exe", não tem prctl equivalente.
+    try:
+        import setproctitle
+
+        setproctitle.setproctitle("apolo " + " ".join(argv if argv is not None else sys.argv[1:]))
+    except Exception:
+        pass
+
     if sys.platform == "win32":
         # O console do Windows abre com a codepage legada (cp1252 etc.), que
         # não sabe codificar glifos Unicode -- qualquer print com caractere
