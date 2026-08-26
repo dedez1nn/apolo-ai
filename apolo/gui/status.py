@@ -1,4 +1,4 @@
-"""Status — leitura pura dos contadores que o cli juntou antes de abrir o app."""
+"""Status: leitura pura dos contadores que o cli juntou antes de abrir o app."""
 
 from __future__ import annotations
 

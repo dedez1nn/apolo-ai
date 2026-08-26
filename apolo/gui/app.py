@@ -1,15 +1,15 @@
-"""App Flet do Apolo — janela nativa que abre no clique da bandeja/Waybar.
+"""App Flet do Apolo: janela nativa que abre no clique da bandeja/Waybar.
 
 Fase 1: substitui a TUI Textual (`apolo/ui/`, apagada) por um app desktop de
-verdade — sem console, sem terminal no meio. Mantém o mesmo contrato que o
+verdade, sem console, sem terminal no meio. Mantém o mesmo contrato que o
 `cli.py` já chamava: `run_ui(rows, rules_path, stats, config, contas_ativas)
 -> list[DispatchItem]`, bloqueante, devolvendo os itens a despachar (fallback;
 o despacho normal já acontece dentro da própria tela de fila, ao aplicar).
 
-Navegação: pilha manual de "telas" (cada uma monta um `ft.View`) — Hub no
+Navegação: pilha manual de "telas" (cada uma monta um `ft.View`), Hub no
 fundo, o resto empilha por cima; `Esc` volta. Modais (diálogos) empilham só um
 handler de teclado, sem entrar em `page.views`. Um único `page.on_keyboard_event`
-sempre despacha pro topo da pilha — é o equivalente ao foco exclusivo do
+sempre despacha pro topo da pilha: é o equivalente ao foco exclusivo do
 `ModalScreen` do Textual.
 """
 
@@ -99,7 +99,7 @@ class ApoloApp:
                 self.contas_invalidas[f"gmail:{account.name}"] = motivo
                 self.notify(
                     f"gmail:{account.name}: {motivo}\n"
-                    "Reautorize a conta em Regras/Configurações — até lá, "
+                    "Reautorize a conta em Configurar Gmail; até lá, "
                     "sincronizar ignora essa conta.",
                     severity="warning",
                 )
@@ -146,9 +146,9 @@ class ApoloApp:
         self.page.update()
 
     def exit(self) -> None:
-        # Window.close() é uma coroutine -- chamado direto (sem await) desde um
+        # Window.close() é uma coroutine. Chamado direto (sem await) desde um
         # handler de teclado síncrono, a corrotina nunca roda e a janela não
-        # fecha. run_task agenda no loop da page, que é seguro daqui.
+        # fecha; run_task agenda no loop da page, que é seguro daqui.
         self.page.run_task(self.page.window.close)
 
     # ----- teclado (topo da pilha sempre vence) -----
@@ -177,7 +177,7 @@ class ApoloApp:
 def run_ui(rows, rules_path: Path, stats: UiStats, config=None, contas_ativas: set | None = None) -> list[DispatchItem]:
     """Abre o app; devolve os itens a despachar (lixeira/manter) ao fechar."""
     app = ApoloApp(rows, rules_path, stats, config, contas_ativas=contas_ativas)
-    # assets_dir absoluto -- o padrão ("assets", relativo ao cwd) quebra
+    # assets_dir absoluto: o padrão ("assets", relativo ao cwd) quebra
     # porque `apolo review` roda de qualquer diretório, não da raiz do
     # projeto (é assim que a fonte da barra de sincronização é achada).
     assets_dir = str(Path(__file__).resolve().parent / "assets")

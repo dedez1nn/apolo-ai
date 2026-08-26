@@ -1,4 +1,4 @@
-"""Configurações — a única tela que muda estado fora da fila.
+"""Configurações: a única tela que muda estado fora da fila.
 
 Três destinos: timer (systemd, via `apolo.scheduler`), IA/Ollama (`.env`) e
 ação do List-Unsubscribe (`rules/config.toml`). Nada aplica até "Salvar".
@@ -91,7 +91,7 @@ class SettingsScreen:
             spacing=14, scroll=ft.ScrollMode.AUTO, expand=True,
         )
         return scaffold(
-            header("Configurações", "ajustes locais — nada é aplicado até salvar"),
+            header("Configurações", "ajustes locais, nada é aplicado até salvar"),
             body,
             rodape(flash(self._msg_ref), keybar([("Ctrl+S", "Salvar"), ("F2", "Colar senha"), ("Esc", "Voltar")])),
         )

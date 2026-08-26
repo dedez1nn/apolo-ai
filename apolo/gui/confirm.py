@@ -1,4 +1,4 @@
-"""Modal de confirmação genérico (sim/não) — usado antes de ações irreversíveis,
+"""Modal de confirmação genérico (sim/não), usado antes de ações irreversíveis,
 como excluir um email favoritado (ver `queue.py`).
 """
 
@@ -40,7 +40,7 @@ class ConfirmModal:
             self._resolve(False)
 
     async def ask(self) -> bool:
-        # Future criada aqui dentro (não no __init__) -- get_running_loop()
+        # Future criada aqui dentro (não no __init__): get_running_loop()
         # só é seguro chamado de dentro de uma coroutine já rodando; no
         # __init__ (síncrono) não há garantia de qual thread/loop está ativo.
         self._future = asyncio.get_running_loop().create_future()

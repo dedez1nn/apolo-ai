@@ -1345,7 +1345,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Sem isso, `ps`/btop/htop mostram só "python3" -- genérico demais pra
+    # Sem isso, `ps`/btop/htop mostram só "python3", genérico demais pra
     # achar o processo num monitor cheio de outra coisa. Só funciona no
     # Linux/macOS (reescreve a memória do argv do processo); no Windows o
     # Task Manager sempre mostra "python.exe", não tem prctl equivalente.
@@ -1358,9 +1358,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if sys.platform == "win32":
         # O console do Windows abre com a codepage legada (cp1252 etc.), que
-        # não sabe codificar glifos Unicode -- qualquer print com caractere
+        # não sabe codificar glifos Unicode: qualquer print com caractere
         # fora do cp1252 (ex.: nomes de conta, mensagens de erro) quebra sem
-        # aviso. O app desktop (Flet) não depende disso -- só o `print()` do
+        # aviso. O app desktop (Flet) não depende disso, só o `print()` do
         # cli em si. Força UTF-8 antes de qualquer print rodar; best-effort,
         # não pode virar motivo de crash.
         try:

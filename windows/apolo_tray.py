@@ -5,20 +5,20 @@ Equivalente Windows do botão da Waybar no Linux (ver docs/waybar.md): não faz
 parte do núcleo do Apolo, só é um lançador. A interface já abre sozinha
 assim que o `.exe` inicia (clique no atalho), sem precisar caçar o ícone da
 bandeja primeiro; o ícone continua disponível depois pra reabrir a revisão
-(clique duplo, ou o item padrão do menu) ou ligar o Bridge — "Ligar Proton
+(clique duplo, ou o item padrão do menu) ou ligar o Bridge. "Ligar Proton
 Bridge" testa se ele já está escutando e, se não estiver, tenta abri-lo, já
 que sem o Bridge rodando só contas Gmail funcionam (Proton depende dele).
 
-Não importa nada de `apolo/` — só chama `python -m apolo.cli review` como
+Não importa nada de `apolo/`, só chama `python -m apolo.cli review` como
 subprocesso e lê o `.env` na unha (host/porta do Bridge), então o `.exe`
 gerado por `build.bat` fica pequeno (só empacota pystray + Pillow) e não
 precisa ser reconstruído quando o Apolo muda.
 
-O `apolo.ico` vai embutido dentro do `.exe` (`--add-data` no build.bat) —
+O `apolo.ico` vai embutido dentro do `.exe` (`--add-data` no build.bat);
 só o `.exe` precisa ir pra raiz do projeto, nada de arquivo solto do lado.
 
 Log: `--windowed` (sem console) faz qualquer erro de inicialização morrer em
-silêncio -- nada de traceback visível em lugar nenhum. Por isso todo passo
+silêncio, nada de traceback visível em lugar nenhum. Por isso todo passo
 arriscado escreve em `apolo_tray.log`, do lado do .exe (ver `_log`).
 """
 
@@ -154,11 +154,11 @@ def _abrir_bridge() -> tuple[bool, str]:
     return False, "Bridge não encontrado nos caminhos padrão. Abra manualmente."
 
 
-# Processo de review em andamento (None = nenhum rodando) -- só pra 1) não
+# Processo de review em andamento (None = nenhum rodando), só pra 1) não
 # empilhar uma revisão em cima da outra a cada clique e 2) matar de vez ao
 # sair. `apolo review` abre o app desktop Flet direto (janela normal, sem
-# console) -- nada de CREATE_NEW_CONSOLE/AttachConsole/ShowWindow aqui: isso
-# só existia pra mostrar o console da TUI antiga, que não existe mais.
+# console), então nada de CREATE_NEW_CONSOLE/AttachConsole/ShowWindow aqui:
+# isso só existia pra mostrar o console da TUI antiga, que não existe mais.
 _processo_review: subprocess.Popen | None = None
 
 
@@ -208,8 +208,8 @@ def _texto_bridge(item: pystray.MenuItem) -> str:
 def sair(icon: pystray.Icon, item: pystray.MenuItem) -> None:
     _log("menu: Sair clicado")
     if _processo_review is not None and _processo_review.poll() is None:
-        # Processo único (sem cmd.exe/conhost.exe no meio, ver _lancar_review)
-        # -- terminate() já basta; kill() só se ele não sair a tempo.
+        # Processo único (sem cmd.exe/conhost.exe no meio, ver _lancar_review),
+        # terminate() já basta; kill() só se ele não sair a tempo.
         try:
             _processo_review.terminate()
             _processo_review.wait(timeout=3)
@@ -224,7 +224,7 @@ def sair(icon: pystray.Icon, item: pystray.MenuItem) -> None:
 
 def _setup(icon: pystray.Icon) -> None:
     # Passar `setup` pro `icon.run()` tira do pystray a responsabilidade de
-    # mostrar o ícone sozinho -- quem faz isso é o próprio `setup` (ver
+    # mostrar o ícone sozinho: quem faz isso é o próprio `setup` (ver
     # README do pystray). Esquecer o `visible = True` aqui faz o ícone nunca
     # aparecer na bandeja.
     _log("_setup: chamado")
@@ -238,11 +238,11 @@ _ERROR_ALREADY_EXISTS = 183
 
 
 def _ja_tem_instancia() -> bool:
-    """Mutex nomeado do Windows -- ao contrário de `_processo_review` (que só
+    """Mutex nomeado do Windows: ao contrário de `_processo_review` (que só
     protege dentro de um mesmo processo), isso detecta OUTRO Apolo.exe já
     rodando. Sem isso, cada clique repetido no atalho enquanto o primeiro
     ainda está de pé abre um Apolo.exe + ícone + revisão totalmente novos e
-    paralelos -- visto na prática (3 instâncias simultâneas nos logs)."""
+    paralelos, visto na prática (3 instâncias simultâneas nos logs)."""
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateMutexW(None, False, _MUTEX_NOME)
     return kernel32.GetLastError() == _ERROR_ALREADY_EXISTS
@@ -253,7 +253,7 @@ def main() -> None:
         _log("main: outra instância do Apolo já está rodando, abortando")
         try:
             ctypes.windll.user32.MessageBoxW(
-                0, "O Apolo já está rodando -- veja o ícone na bandeja do sistema.", "Apolo", 0x40
+                0, "O Apolo já está rodando, veja o ícone na bandeja do sistema.", "Apolo", 0x40
             )
         except Exception:
             pass
@@ -271,7 +271,7 @@ def main() -> None:
     )
     icon = pystray.Icon("apolo", image, "Apolo · triagem de emails", menu)
     _log("main: entrando em icon.run(setup=_setup)")
-    # Abre a revisão já na largada -- clicar no atalho leva direto à
+    # Abre a revisão já na largada: clicar no atalho leva direto à
     # interface, sem precisar achar e clicar no ícone da bandeja primeiro.
     # O ícone continua rodando depois pra reabrir a revisão ou ligar o Bridge.
     icon.run(setup=_setup)

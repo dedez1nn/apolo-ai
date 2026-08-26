@@ -1,8 +1,8 @@
-"""Hub — a tela inicial que abre no clique da bandeja/Waybar.
+"""Hub: a tela inicial que abre no clique da bandeja/Waybar.
 
 Layout mestre-detalhe: menu estreito à esquerda (↑↓ + Enter, clique abre
 direto); à direita, ou uma prévia (cursor movendo sem abrir) ou a tela
-escolhida DE VERDADE, embutida no próprio painel — nunca navega pra uma tela
+escolhida DE VERDADE, embutida no próprio painel, nunca navega pra uma tela
 cheia à parte. Só um "foco": None (setas navegam o menu) ou a chave da opção
 aberta (setas/teclas vão pro painel embutido; Esc no painel volta pro menu).
 """
@@ -12,12 +12,13 @@ from __future__ import annotations
 import flet as ft
 
 from apolo.gui.model import ACAO_COR, fmt_remetente
-from apolo.gui.theme import BORDER, COR_LIXEIRA, COR_MANTER, GUTTER, INK, INK_DIM, INK_FAINT, SOL, SURFACE, SURFACE_2
+from apolo.gui.theme import BORDER, COR_LIXEIRA, COR_MANTER, GUTTER, INK, INK_DIM, INK_FAINT, SOL, SURFACE, SURFACE_2, TERRACOTA
 from apolo.gui.widgets import ARROW_DOWN, ARROW_UP, ENTER, ESCAPE, key, keybar
 
 _MENU = [
     ("review", "Revisar fila"),
     ("rules", "Regras configuradas"),
+    ("gmail", "Configurar Gmail"),
     ("config", "Configurações"),
     ("status", "Status & contadores"),
 ]
@@ -39,12 +40,22 @@ class HubScreen:
     def build(self) -> ft.Control:
         n_fila = len(self.app.queue)
         n_regras = self.app.stats.rules_count
-        badges = {"review": str(n_fila) if n_fila else "", "rules": str(n_regras) if n_regras else ""}
+        n_invalidas = len(getattr(self.app, "contas_invalidas", {}))
+        badges = {
+            "review": str(n_fila) if n_fila else "",
+            "rules": str(n_regras) if n_regras else "",
+            # Terracota (ver badge_cor abaixo) em vez do dourado padrão: não é
+            # uma contagem neutra, é "precisa de atenção" (token expirado/
+            # revogado); sem isso o único aviso era um toast que passava
+            # rápido demais na abertura do app pra dar tempo de notar.
+            "gmail": str(n_invalidas) if n_invalidas else "",
+        }
+        badge_cores = {"gmail": TERRACOTA}
 
         self._boxes = []
         rows = []
         for i, (chave, rotulo) in enumerate(_MENU):
-            box = self._row(i, chave, rotulo, badges.get(chave, ""))
+            box = self._row(i, chave, rotulo, badges.get(chave, ""), badge_cores.get(chave, SOL))
             self._boxes.append(box)
             rows.append(box)
 
@@ -73,8 +84,8 @@ class HubScreen:
 
         if self.foco is not None and self._painel_ativo is not None:
             # Painel embutido: ele já traz seu próprio cabeçalho/lista/rodapé
-            # de atalhos (ver *Screen.build() de cada um) -- o Hub não desenha
-            # o próprio rodapé "Navegar/Abrir/Sair" enquanto isso acontece.
+            # de atalhos (ver *Screen.build() de cada um), então o Hub não
+            # desenha o próprio rodapé "Navegar/Abrir/Sair" enquanto isso acontece.
             self._detail_container = ft.Container(content=self._painel_ativo.build(), expand=True)
             corpo = ft.Row([nav, divisor, self._detail_container], spacing=0, expand=True)
             return ft.Column([masthead, corpo], spacing=0, expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
@@ -95,7 +106,7 @@ class HubScreen:
         fila = f"{n} na fila" if n else "fila vazia"
         return f"{fila}  ·  última {fmt_run(self.app.stats.last_run)}"
 
-    def _row(self, i: int, chave: str, rotulo: str, badge: str) -> ft.Container:
+    def _row(self, i: int, chave: str, rotulo: str, badge: str, badge_cor: str = SOL) -> ft.Container:
         selecionado = i == self.idx
         return ft.Container(
             content=ft.Row(
@@ -105,8 +116,8 @@ class HubScreen:
                         weight=ft.FontWeight.W_500, expand=True,
                     ),
                     ft.Container(
-                        content=ft.Text(badge, size=10, weight=ft.FontWeight.BOLD, color="#221803"),
-                        bgcolor=SOL, padding=ft.Padding(left=7, right=7, top=1, bottom=1), border_radius=100,
+                        content=ft.Text(badge, size=10, weight=ft.FontWeight.BOLD, color="#221803" if badge_cor == SOL else "#FFFFFF"),
+                        bgcolor=badge_cor, padding=ft.Padding(left=7, right=7, top=1, bottom=1), border_radius=100,
                         visible=bool(badge),
                     ),
                 ],
@@ -156,7 +167,7 @@ class HubScreen:
         titulo = self._titulo("Revisar fila")
         if not fila:
             return ft.Column(
-                [titulo, ft.Text("Fila vazia — nada para revisar agora.", size=12, color=INK_DIM)],
+                [titulo, ft.Text("Fila vazia, nada para revisar agora.", size=12, color=INK_DIM)],
                 spacing=10,
             )
         rodape = ft.Text(f"{len(fila)} email(s) aguardando · Enter para revisar", size=11, color=INK_DIM)
@@ -172,7 +183,7 @@ class HubScreen:
             return ft.Column([titulo, ft.Text(f"Erro ao ler regras: {e}", size=12, color=COR_LIXEIRA)], spacing=10)
         if not entries:
             return ft.Column(
-                [titulo, ft.Text("Nenhuma regra ainda — Enter para criar a primeira.", size=12, color=INK_DIM)],
+                [titulo, ft.Text("Nenhuma regra ainda. Enter para criar a primeira.", size=12, color=INK_DIM)],
                 spacing=10,
             )
         linhas = []
@@ -187,6 +198,45 @@ class HubScreen:
         if len(entries) > 14:
             linhas.append(ft.Text(f"… e mais {len(entries) - 14}", size=11, color=INK_FAINT))
         return ft.Column([titulo, *linhas], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True)
+
+    def _detalhe_gmail(self) -> ft.Control:
+        titulo = self._titulo("Configurar Gmail")
+        cfg = self.app.config
+        if cfg is None:
+            return ft.Column([titulo, ft.Text("Configuração não carregada.", size=12, color=INK_DIM)], spacing=10)
+        if not cfg.gmail_client_id or not cfg.gmail_client_secret:
+            return ft.Column(
+                [
+                    titulo,
+                    ft.Text(
+                        "Defina APOLO_GMAIL_CLIENT_ID e APOLO_GMAIL_CLIENT_SECRET\nno .env antes de autorizar uma conta.",
+                        size=12, color=INK_DIM,
+                    ),
+                ],
+                spacing=10,
+            )
+        from apolo.config import load_accounts
+
+        contas = [a for a in load_accounts(cfg.accounts_path) if a.provider == "gmail"]
+        invalidas = getattr(self.app, "contas_invalidas", {})
+        if not contas:
+            return ft.Column(
+                [titulo, ft.Text("Nenhuma conta Gmail ainda. Enter pra autorizar a primeira.", size=12, color=INK_DIM)],
+                spacing=10,
+            )
+        linhas = []
+        for c in contas:
+            motivo = invalidas.get(f"gmail:{c.name}")
+            cor = COR_LIXEIRA if motivo else COR_MANTER
+            estado = f"reautorizar: {motivo}" if motivo else "token ok"
+            linhas.append(
+                ft.Row(
+                    [ft.Text(GUTTER, color=cor), ft.Text(c.name, size=12, color=INK, width=140), ft.Text(estado, size=11, color=cor)],
+                    spacing=8,
+                )
+            )
+        linhas.append(ft.Text("Enter pra adicionar/reautorizar uma conta.", size=11, color=INK_FAINT))
+        return ft.Column([titulo, *linhas], spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def _detalhe_config(self) -> ft.Control:
         titulo = self._titulo("Configurações")
@@ -273,6 +323,10 @@ class HubScreen:
             from apolo.gui.rules_screen import RulesScreen
 
             return RulesScreen()
+        if chave == "gmail":
+            from apolo.gui.gmail_setup import GmailSetupScreen
+
+            return GmailSetupScreen()
         if chave == "config":
             from apolo.gui.settings import SettingsScreen
 
@@ -287,7 +341,7 @@ class HubScreen:
         if self.foco == chave:
             return  # já aberto, nada a fazer
         if self._painel_ativo is not None:
-            # Sai do painel anterior sem passar pelo Esc dele -- ainda assim
+            # Sai do painel anterior sem passar pelo Esc dele, mas ainda assim
             # precisa da limpeza (ex.: fila com decisão pendente não aplicada
             # não pode simplesmente sumir, ver QueueScreen.ao_perder_foco).
             getattr(self._painel_ativo, "ao_perder_foco", lambda: None)()
@@ -308,7 +362,7 @@ class HubScreen:
         self.app.refresh_top()
 
     def _recarregar_fila(self) -> None:
-        """Relê a fila do banco — pega o que o timer (`apolo run` em paralelo)
+        """Relê a fila do banco: pega o que o timer (`apolo run` em paralelo)
         inseriu enquanto o dono estava fora do Hub."""
         if not self.app.config:
             return

@@ -1,10 +1,10 @@
-"""Corpo do email — versão enxuta (Fase 1).
+"""Corpo do email: versão enxuta (Fase 1).
 
 Substitui os 954 linhas do parser HTML→blocos de terminal da TUI antiga: sem
 canvas de terminal pra desenhar em cima, um controle de texto nativo já
 resolve. `WebView` do Flet não cobre Windows/Linux desktop (só
 iOS/Android/macOS/Web), então o corpo vira texto limpo via
-`apolo.clean.message_to_text` — mesma extração que a classificação já usa.
+`apolo.clean.message_to_text`, mesma extração que a classificação já usa.
 Resolução de imagem inline por CID fica pra Fase 2, se fizer falta.
 """
 
@@ -20,7 +20,7 @@ from apolo.gui.widgets import ESCAPE, key
 
 
 class BodyViewModal:
-    """`await BodyViewModal(app, item).show()` — não devolve nada, só fecha em Esc."""
+    """`await BodyViewModal(app, item).show()`: não devolve nada, só fecha em Esc."""
 
     def __init__(self, app, item: Item):
         self.app = app

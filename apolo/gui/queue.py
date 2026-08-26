@@ -1,10 +1,10 @@
-"""Fila de revisão — onde o dono despacha o resíduo.
+"""Fila de revisão: onde o dono despacha o resíduo.
 
 Lista navegável, decide com d/m/b/a, a decisão tira o email da lista na hora
 (vai pra uma pilha de histórico); `u` desfaz. `b`/`a` gravam a regra na hora
 (loop de aprendizado). Enter aplica AGORA (despacha via IMAP/Gmail num
 diálogo com thread). `s` sincroniza ao vivo (`apolo.sync.run_sync`) numa
-thread, sem travar a tela — itens novos entram direto na lista.
+thread, sem travar a tela; itens novos entram direto na lista.
 """
 
 from __future__ import annotations
@@ -58,16 +58,16 @@ class QueueScreen:
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         )
         # True só depois que a árvore construída em build() está de fato na
-        # page -- controla se _render_lista()/_render_header() podem chamar
+        # page: controla se _render_lista()/_render_header() podem chamar
         # .update() (senão dá erro em controle ainda não montado). Ações
         # próprias da tela (mover cursor, decidir, desfazer, sincronizar)
-        # NUNCA chamam app.refresh_top() -- isso chamaria build() de novo, e
-        # build() chama _aplicar_filtro(), que reseta self.idx pra 0. Todo
+        # NUNCA chamam app.refresh_top(), pois isso chamaria build() de novo,
+        # e build() chama _aplicar_filtro(), que reseta self.idx pra 0. Todo
         # update depois da montagem é direto nos controles já existentes.
         self._mounted = False
         # Chamado em vez de app.pop_screen() quando embutido dentro de outra
         # tela (o Hub embute a fila no próprio painel, não empilha mais uma
-        # tela cheia) -- None usa o pop_screen padrão (uso avulso).
+        # tela cheia); None usa o pop_screen padrão (uso avulso).
         self.on_close = None
 
     # ----- montagem -----
@@ -138,7 +138,7 @@ class QueueScreen:
             no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS,
         )
         # Segunda linha em 3 zonas: dado (conta/favorito) à esquerda, prévia
-        # do assunto centralizada, horário à direita — larguras fixas nas
+        # do assunto centralizada, horário à direita, com larguras fixas nas
         # pontas pra sobrar o mesmo espaço dos dois lados do centro.
         dado = " ".join(filter(None, [f"[{fmt_conta(it.conta)}]" if mostrar_badge else "", "★" if it.favorito else ""]))
         esquerda = ft.Text(dado, size=11, color=cor_fraca, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, width=150)
@@ -185,7 +185,7 @@ class QueueScreen:
             self._msg_ref.current.update()
 
     def _banner(self, texto: str, bg: str, fg: str = "#FFFFFF") -> None:
-        """Status da sincronização (sincronizando/concluída/erro) -- único
+        """Status da sincronização (sincronizando/concluída/erro): único
         lugar pra isso, no topo, em vez de espalhado entre a linha de
         contadores e a mensagem flutuante do rodapé."""
         self._banner_container.bgcolor = bg
@@ -281,7 +281,7 @@ class QueueScreen:
                 return
             _, dominio = parse_sender(it.remetente)
             if not dominio:
-                self._msg("sem domínio no remetente — regra não criada")
+                self._msg("sem domínio no remetente, regra não criada")
                 return
             try:
                 status = add_rule_entry(self.app.rules_path, lista=lista, tipo="dominio", valor=dominio)
@@ -331,8 +331,11 @@ class QueueScreen:
             return
         DispatchProgress(self.app, itens, self._apos_aplicar).show()
 
-    def _apos_aplicar(self, msg: str | None) -> None:
-        self.app.notify(f"Aplicado: {msg}" if msg else "Aplicado.")
+    def _apos_aplicar(self) -> None:
+        # O próprio diálogo já mostrou o resultado antes de fechar (ver
+        # DispatchProgress), então nada de notify() aqui: um toast separado
+        # é não-modal, ficava "por cima" enquanto o dono já conseguia navegar
+        # o menu por baixo, parecendo travado.
         self._fechar()
 
     def _fechar(self) -> None:
@@ -340,7 +343,7 @@ class QueueScreen:
 
     def ao_perder_foco(self) -> None:
         """Chamado quando a tela sai de foco sem passar por `_voltar()` (ex.:
-        o dono clicou noutro item do menu do Hub) -- desfaz decisões
+        o dono clicou noutro item do menu do Hub); desfaz decisões
         pendentes do mesmo jeito que `_voltar()` faria, senão elas somem da
         fila (removidas de `app.queue` em `_decidir`) sem nunca ter sido
         aplicadas nem devolvidas."""
@@ -354,7 +357,7 @@ class QueueScreen:
             self._msg("configuração não carregada")
             return
         it = self._exibidos[self.idx]
-        # run_task exige uma coroutine function de verdade -- um
+        # run_task exige uma coroutine function de verdade. Um
         # `lambda: obj.ask()` é uma função comum (só devolve a coroutine ao
         # ser chamada), não passa no `iscoroutinefunction` do Flet. Passar o
         # método assíncrono já ligado ao objeto (sem chamar) resolve.
@@ -386,7 +389,7 @@ class QueueScreen:
             self._banner("sincronização já em andamento…", AMBAR, SOL_INK)
             return
         if not self.app.config:
-            self._banner("configuração não carregada — sincronização não iniciada", TERRACOTA)
+            self._banner("configuração não carregada, sincronização não iniciada", TERRACOTA)
             return
         conta = self._conta_atual
         self._sync_ativo = True
@@ -457,7 +460,7 @@ class QueueScreen:
             if self._sync_favoritos:
                 extras.append(f"{self._sync_favoritos} ★ atualizado(s)")
             extra_txt = f" ({', '.join(extras)})" if extras else ""
-            self._banner(f"✓ sincronização concluída — {self._sync_encontrados} novo(s){extra_txt}", LOURO)
+            self._banner(f"✓ sincronização concluída, {self._sync_encontrados} novo(s){extra_txt}", LOURO)
             if self._sync_auto_lixeira:
                 self.app.notify(f"{self._sync_auto_lixeira} email(s) movido(s) automaticamente pra lixeira.")
             self._render_header()
@@ -496,16 +499,20 @@ class QueueScreen:
 
 
 class DispatchProgress:
-    """Aplica as decisões numa thread; fecha o diálogo e chama `on_done(msg)`."""
+    """Aplica as decisões numa thread. Mostra "Aplicando…", troca pelo
+    resultado no MESMO diálogo (sem virar um toast solto e não-modal por
+    cima, que deixava dar pra navegar o menu por baixo enquanto ele ainda
+    estava sumindo) e só então fecha e chama `on_done()`."""
 
     def __init__(self, app, itens: list[DispatchItem], on_done):
         self.app = app
         self._itens = itens
         self._on_done = on_done
+        self._msg_ref: ft.Ref[ft.Text] = ft.Ref()
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Aplicando…", color=INK, weight=ft.FontWeight.BOLD),
-            content=ft.Text("Movendo pra lixeira e marcando…", color=INK_DIM),
+            content=ft.Text("Movendo pra lixeira e marcando…", ref=self._msg_ref, color=INK_DIM),
         )
 
     def show(self) -> None:
@@ -513,6 +520,8 @@ class DispatchProgress:
         self.app.page.run_thread(self._executar)
 
     def _executar(self) -> None:
+        import time
+
         from apolo.actions import apply_decisions
 
         try:
@@ -521,12 +530,19 @@ class DispatchProgress:
             if res.falhas:
                 partes.append(f"{res.falhas} falha(s)")
             if res.protegidos:
-                partes.append(f"{res.protegidos} ★ protegido(s) (favoritado — não enviado)")
-            msg = ", ".join(partes)
+                partes.append(f"{res.protegidos} ★ protegido(s) (favoritado, não enviado)")
+            msg = "✓ " + ", ".join(partes)
+            cor = LOURO
         except Exception as exc:
-            msg = f"erro: {exc}"
+            msg = f"✗ erro: {exc}"
+            cor = TERRACOTA
+        if self._msg_ref.current:
+            self._msg_ref.current.value = msg
+            self._msg_ref.current.color = cor
+            self._msg_ref.current.update()
+        time.sleep(1.1)  # deixa o resultado visível um instante antes de sumir
         self.app.close_dialog()
-        self._on_done(msg)
+        self._on_done()
 
 
 class CodeModal:

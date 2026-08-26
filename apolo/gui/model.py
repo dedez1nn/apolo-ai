@@ -1,6 +1,6 @@
 """Modelo de um item da fila + helpers de formatação compartilhados pelas telas.
 
-Idêntico ao antigo `apolo/ui/model.py` (Textual) — só a origem da cor mudou.
+Idêntico ao antigo `apolo/ui/model.py` (Textual), só a origem da cor mudou.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ ACAO_COR = {
 
 
 def fmt_conta(conta: str) -> str:
-    """'gmail:andregg128@gmail.com' -> 'gmail:andregg128' (tira o domínio —
+    """'gmail:andregg128@gmail.com' -> 'gmail:andregg128' (tira o domínio;
     numa coluna estreita da fila, o endereço inteiro só virava reticências
     sem dar pra saber de qual conta era, ex.: "andregg12…")."""
     if ":" not in conta:
@@ -91,14 +91,14 @@ class Item:
         self.regra = row["regra_casada"] or ""
         self.acao = row["acao_sugerida"] or ACAO_REVISAR
         self.favorito = bool(row["favorito"]) if "favorito" in row.keys() else False
-        # True enquanto aguarda o Ollama (sincronização ao vivo) — não é uma
+        # True enquanto aguarda o Ollama (sincronização ao vivo); não é uma
         # ação de despacho, só um estado transitório de exibição.
         self.analisando = False
         self.processado_em = row["processado_em"] if "processado_em" in row.keys() else None
 
     @classmethod
     def from_sync(cls, s, *, acao: str) -> "Item":
-        """Constrói a partir de um `SyncItem` (apolo.sync) — sem passar por `row`."""
+        """Constrói a partir de um `SyncItem` (apolo.sync), sem passar por `row`."""
         obj = cls.__new__(cls)
         obj.conta = s.conta
         obj.pasta = s.pasta

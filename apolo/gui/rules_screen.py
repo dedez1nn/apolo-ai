@@ -1,4 +1,4 @@
-"""Gerenciador de regras — listar, remover e adicionar/editar allow/blocklist.
+"""Gerenciador de regras: listar, remover e adicionar/editar allow/blocklist.
 
 Lista navegável (↑↓), remove com X, adiciona/edita com A/E num modal com
 prévia ao vivo (quantos emails da fila aquela regra pegaria).
@@ -78,7 +78,7 @@ class RulesScreen:
         n_block = sum(1 for e in self._entries if e[0] == "blocklist")
         cab = f"{n_allow} allowlist   ·   {n_block} blocklist"
         if not self._entries:
-            cab += "   —   nenhuma regra ainda, A pra criar a primeira"
+            cab += "   ·   nenhuma regra ainda, A pra criar a primeira"
         if self._header_ref.current:
             self._header_ref.current.value = cab
             if self._mounted:
@@ -232,7 +232,7 @@ class RuleFormModal:
         from apolo.rules.writer import detect_tipo
 
         valor = (self.valor_field.value or "").strip()
-        tipo = detect_tipo(valor) if valor else "—"
+        tipo = detect_tipo(valor) if valor else "-"
         self.tipo_text.value = f"tipo detectado: {tipo}"
         if not valor:
             self.preview_text.value = "digite um valor para ver o que casaria na fila…"
@@ -248,7 +248,7 @@ class RuleFormModal:
 
         valor = (self.valor_field.value or "").strip()
         if not valor:
-            self.preview_text.value = "valor vazio — nada criado"
+            self.preview_text.value = "valor vazio, nada criado"
             self.preview_text.update()
             return
         lista = self.lista_field.value
