@@ -28,13 +28,16 @@ class BodyViewModal:
         self._future: asyncio.Future | None = None
         self._shown = False
 
-        self.body_text = ft.Text("Buscando o email…", size=13, color=INK_DIM, selectable=True)
+        self.body_text = ft.Text(
+            "Buscando o email…", size=13, color=INK_DIM, selectable=True,
+            style=ft.TextStyle(height=1.5),
+        )
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(fmt_remetente(item.remetente), color=INK, weight=ft.FontWeight.BOLD, size=14),
             content=ft.Container(
                 content=ft.Column([self.body_text], scroll=ft.ScrollMode.AUTO),
-                width=560, height=420,
+                width=860, height=640,
             ),
             actions=[ft.TextButton("Fechar (Esc)", on_click=lambda e: self._resolve())],
         )

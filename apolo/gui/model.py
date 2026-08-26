@@ -21,6 +21,18 @@ ACAO_COR = {
 }
 
 
+def fmt_conta(conta: str) -> str:
+    """'gmail:andregg128@gmail.com' -> 'gmail:andregg128' (tira o domínio —
+    numa coluna estreita da fila, o endereço inteiro só virava reticências
+    sem dar pra saber de qual conta era, ex.: "andregg12…")."""
+    if ":" not in conta:
+        return conta
+    provedor, nome = conta.split(":", 1)
+    if "@" in nome:
+        nome = nome.split("@", 1)[0]
+    return f"{provedor}:{nome}"
+
+
 def fmt_data(raw: str) -> str:
     """Header Date -> '24/06 10:03'. Tolera formato estranho (corta o cru)."""
     if not raw:

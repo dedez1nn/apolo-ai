@@ -123,7 +123,17 @@ def message_to_text(msg: Message) -> str:
         # Alguns clientes mandam HTML rotulado como text/plain.
         if _looks_like_html(text):
             text = strip_html(text)
-        return normalize_whitespace(text)
+        text = normalize_whitespace(text)
+        # Alguns remetentes (newsletters/marketing) geram o text/plain só
+        # como um "resumo" achatado, sem quebra de linha nenhuma, mesmo tendo
+        # um text/html bem estruturado do lado (confirmado num email real:
+        # 1390 caracteres, 0 quebras no plain, contra 64 quebras no html
+        # limpo). Nesse caso o HTML rende bem melhor pro dono ler.
+        if html_parts and len(text) > 200 and text.count("\n") < 3:
+            html_text = strip_html("\n".join(html_parts))
+            if html_text:
+                return html_text
+        return text
 
     if html_parts:
         return strip_html("\n".join(html_parts))

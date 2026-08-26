@@ -15,7 +15,7 @@ import flet as ft
 
 from apolo.actions import DispatchItem
 from apolo.gui.confirm import ConfirmModal
-from apolo.gui.model import ACAO_COR, ACAO_ICONE, ACAO_ROTULO, Item, fmt_data, fmt_remetente
+from apolo.gui.model import ACAO_COR, ACAO_ICONE, ACAO_ROTULO, Item, fmt_conta, fmt_data, fmt_remetente
 from apolo.gui.theme import AMBAR, COR_LIXEIRA, COR_MANTER, FONTE_STATUS, INK, INK_DIM, LOURO, SOL, SOL_INK, SURFACE, TERRACOTA
 from apolo.gui.widgets import ARROW_DOWN, ARROW_UP, ENTER, ESCAPE, TAB, flash, header, key, keybar, rodape, scaffold
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, parse_sender
@@ -140,8 +140,8 @@ class QueueScreen:
         # Segunda linha em 3 zonas: dado (conta/favorito) à esquerda, prévia
         # do assunto centralizada, horário à direita — larguras fixas nas
         # pontas pra sobrar o mesmo espaço dos dois lados do centro.
-        dado = " ".join(filter(None, [f"[{it.conta}]" if mostrar_badge else "", "★" if it.favorito else ""]))
-        esquerda = ft.Text(dado, size=11, color=cor_fraca, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, width=110)
+        dado = " ".join(filter(None, [f"[{fmt_conta(it.conta)}]" if mostrar_badge else "", "★" if it.favorito else ""]))
+        esquerda = ft.Text(dado, size=11, color=cor_fraca, no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, width=150)
         centro = ft.Text(
             it.assunto or "(sem assunto)", size=11, color=cor_fraca, text_align=ft.TextAlign.CENTER,
             no_wrap=True, overflow=ft.TextOverflow.ELLIPSIS, expand=True,
