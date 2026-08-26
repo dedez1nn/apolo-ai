@@ -1,15 +1,15 @@
-"""Modelo de um item da fila + helpers de formatação compartilhados pelas telas."""
+"""Modelo de um item da fila + helpers de formatação compartilhados pelas telas.
+
+Idêntico ao antigo `apolo/ui/model.py` (Textual) — só a origem da cor mudou.
+"""
 
 from __future__ import annotations
 
 from email.utils import parseaddr, parsedate_to_datetime
 
+from apolo.gui.theme import COR_LIXEIRA, COR_MANTER, COR_REVISAR, INK_FAINT
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, ACAO_PENDENTE, ACAO_REVISAR
-from apolo.ui.theme import COR_LIXEIRA, COR_MANTER, COR_REVISAR, INK_FAINT
 
-# Glyph + rótulo + cor (hex do tema) por ação. Glyphs Unicode comuns — sem
-# dependência de nerd font: ● lixeira, ✓ manter, ◆ revisar, ○ pendente (a
-# cascata não decidiu e a IA está desligada — ninguém analisou ainda).
 ACAO_ICONE = {ACAO_LIXEIRA: "●", ACAO_MANTER: "✓", ACAO_REVISAR: "◆", ACAO_PENDENTE: "○"}
 ACAO_ROTULO = {
     ACAO_LIXEIRA: "lixeira", ACAO_MANTER: "manter", ACAO_REVISAR: "revisar",
@@ -82,8 +82,6 @@ class Item:
         # True enquanto aguarda o Ollama (sincronização ao vivo) — não é uma
         # ação de despacho, só um estado transitório de exibição.
         self.analisando = False
-        # Só preenchido pra despachados (ex.: tela "Emails de ruído") — quando
-        # o email saiu da fila de verdade, pra calcular o prazo de expiração.
         self.processado_em = row["processado_em"] if "processado_em" in row.keys() else None
 
     @classmethod
@@ -103,4 +101,5 @@ class Item:
         obj.acao = acao or ACAO_REVISAR
         obj.analisando = False
         obj.favorito = getattr(s, "favorito", False)
+        obj.processado_em = None
         return obj

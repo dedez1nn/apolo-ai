@@ -1,8 +1,8 @@
 # Botão do apolo na Waybar
 
-Botão na Waybar (setup JaKooLit / Hyprland-Dots) que abre a TUI de revisão
-(`apolo review`) com um clique. Fica no **centro** da barra, entre o clima e o
-relógio, mostrando a foto do apolo como ícone.
+Botão na Waybar (setup JaKooLit / Hyprland-Dots) que abre o app desktop de
+revisão (`apolo review`) com um clique. Fica no **centro** da barra, entre o
+clima e o relógio, mostrando a foto do apolo como ícone.
 
 ## Arquivos envolvidos
 
@@ -11,7 +11,7 @@ Tudo vive em `~/.config/waybar/` (não no repo — são dotfiles do sistema):
 | Arquivo | Papel |
 |---|---|
 | `apolo.png` | Ícone, redimensionado de `~/Downloads/apolo.png` (1024² → 48×48) |
-| `apolo-review.sh` | Launcher: `cd ~/proton-api && python -m apolo.cli review` |
+| `apolo-review.sh` | Launcher: `~/proton-api/.venv/bin/python -m apolo.cli review` |
 | `UserModules` | Define o módulo `custom/apolo` (formato, tooltip, `on-click`) |
 | `configs/[TOP] Andre Liquid Glass` | `config` ativo — `custom/apolo` em `modules-center` |
 | `style/[Extra] Liquid Glass.css` | Estilo de `#custom-apolo` (ícone + hover) |
@@ -32,23 +32,19 @@ magick ~/Downloads/apolo.png -resize 48x48 -background none \
 
 ```bash
 #!/usr/bin/env bash
-# Lançador da UI de revisão do apolo — chamado pelo botão da Waybar (kitty -e).
-cd "$HOME/proton-api" || { echo "pasta ~/proton-api não encontrada"; read -rn1; exit 1; }
-# A UI usa Textual, que vive no venv do projeto; o python do sistema não o tem.
+# Lançador da revisão do apolo — chamado pelo botão da Waybar direto,
+# sem terminal no meio (o app já abre a própria janela).
 PY="$HOME/proton-api/.venv/bin/python"
 [ -x "$PY" ] || PY="python"   # fallback se o venv ainda não existir
-"$PY" -m apolo.cli review
-rc=$?
-if [ "$rc" -ne 0 ]; then
-    echo
-    read -rn1 -p "apolo saiu com erro ($rc). Pressione qualquer tecla para fechar..."
-fi
+cd "$HOME/proton-api" && exec "$PY" -m apolo.cli review
 ```
 
-A UI é Textual (`apolo/ui/`), então precisa de um terminal — o `on-click` abre o
-`kitty` com `-e` apontando pra este script. O Textual mora no venv
-(`~/proton-api/.venv`); recrie com `python -m venv .venv && .venv/bin/pip
-install -r requirements.txt`.
+A UI é um app desktop (Flet, `apolo/gui/`) — abre a própria janela, não
+precisa de terminal nenhum no meio. O `on-click` chama este script direto
+(sem `kitty -e`); erros de inicialização vão pro log do apolo, não pra tela,
+já que não há mais console pra segurar a mensagem. O Flet mora no venv do
+projeto (`~/proton-api/.venv`); recrie com `python -m venv .venv &&
+.venv/bin/pip install -r requirements.txt`.
 
 ### 3. Módulo — em `~/.config/waybar/UserModules`
 
@@ -57,7 +53,7 @@ install -r requirements.txt`.
     "format": " ",
     "tooltip": true,
     "tooltip-format": "apolo · triagem de emails (clique pra abrir)",
-    "on-click": "kitty --title 'apolo · review' --class apolo-review -e $HOME/.config/waybar/apolo-review.sh"
+    "on-click": "$HOME/.config/waybar/apolo-review.sh"
 },
 ```
 
@@ -104,7 +100,6 @@ killall waybar && waybar & disown
 ## Ajustes comuns
 
 - **Tamanho do ícone:** `background-size` (e o do `:hover`).
-- **Terminal:** troque `kitty` por `alacritty` no `on-click`.
 - **Posição:** mova `"custom/apolo"` dentro de `modules-center`/`-left`/`-right`.
 - **Mais "liquid glass":** dá pra virar uma pill de vidro (fundo translúcido +
   `border` + `box-shadow` com brilho interno), espelhando o estilo de
@@ -119,20 +114,23 @@ killall waybar && waybar & disown
 
 ## O que isso é, na verdade
 
-Esse módulo é só um **launcher**: um ícone que abre um terminal rodando
-`apolo review` (a TUI, em `apolo/ui/`). Nada disso mora no repositório — é
-puramente dotfiles do Hyprland/Waybar deste sistema. A TUI em si não sabe o
-que é Waybar; roda igual em qualquer terminal, de qualquer SO.
+Esse módulo é só um **launcher**: um ícone que abre a janela de revisão do
+apolo (`apolo/gui/`) direto, sem terminal no meio. Nada disso mora no
+repositório — é puramente dotfiles do Hyprland/Waybar deste sistema. O app
+em si não sabe o que é Waybar; abre igual rodando `apolo review` de qualquer
+lugar, em qualquer SO.
 
 Um equivalente noutro ambiente é a mesma ideia com outra casca — nenhum deles
 precisa ser construído pra usar o Apolo, só ajuda a lembrar que a fila tem
 algo esperando:
 
 - **Windows:** um ícone na bandeja do sistema via
-  [`pystray`](https://pypi.org/project/pystray/), cujo clique roda
-  `python -m apolo.cli review` num terminal.
+  [`pystray`](https://pypi.org/project/pystray/) (`windows/apolo_tray.py`),
+  cujo clique roda `python -m apolo.cli review` como processo comum — sem
+  console, a janela do app já é a interface.
 - **macOS:** um item na barra de menu via
-  [`rumps`](https://pypi.org/project/rumps/), mesma ideia.
+  [`rumps`](https://pypi.org/project/rumps/) (`macos/apolo_tray.py`), mesma
+  ideia.
 - **Qualquer SO, sem instalar nada:** um alias de shell (`alias apolo-review='python
   -m apolo.cli review'`) ou atalho de teclado do próprio ambiente — dá menos
   destaque visual, mas cobre o mesmo caso de uso (abrir a fila com um comando

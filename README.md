@@ -37,10 +37,10 @@ de software do que o envelope genérico de todo cliente de email.
 ## Estado atual — passos 1 a 5 do roadmap
 
 Implementado o **backbone** (fetch incremental + SQLite), a **limpeza de corpo
-HTML/CSS**, o **motor de regras determinístico**, a **UI de revisão (Textual)** —
-um hub com fila, gerenciador de regras e configurações — além de `block`/`allow`
-de terminal, a **classificação do resíduo via Ollama** e as **notificações
-`notify-send` + timer do systemd** (`apolo setup`).
+HTML/CSS**, o **motor de regras determinístico**, a **UI de revisão** — um app
+desktop (Flet) com hub, fila, gerenciador de regras e configurações — além de
+`block`/`allow` de terminal, a **classificação do resíduo via Ollama** e as
+**notificações `notify-send` + timer do systemd** (`apolo setup`).
 
 ```
 apolo/
@@ -53,7 +53,7 @@ apolo/
   actions.py           # despacha a fila: move pra Trash + loga (passo 3)
   scheduler.py         # controle do systemd timer (usado pela UI e pelo setup)
   notify.py            # notify-send best-effort (passo 5)
-  ui/                  # interface Textual (hub + telas) — ver docs/ui.md
+  gui/                 # interface desktop Flet (hub + telas) — ver docs/ui.md
   ai/ollama.py         # classificação do resíduo via Ollama (passo 4)
   fetch/imap.py        # conexão Bridge, busca incremental + copy/expunge
   storage/db.py        # SQLite: emails + acoes (log p/ undo) + meta
@@ -68,13 +68,13 @@ Núcleo sem dependências externas — tudo stdlib (`imaplib`, `sqlite3`, `email
 (libnotify) e agendamento via `systemd --user`. O caminho do timer (`apolo run`)
 nunca importa nada de terceiros.
 
-A **única** dependência externa é o [Textual](https://textual.textualize.io/),
-usado só pela UI (`apolo review`, em `apolo/ui/`) e importado de forma *lazy*.
-Vive num venv do projeto:
+A **única** dependência externa é o [Flet](https://flet.dev/), usado só pela UI
+(`apolo review`, em `apolo/gui/`) e importado de forma *lazy*. Vive num venv do
+projeto:
 
 ```bash
 python -m venv .venv
-.venv/bin/pip install -r requirements.txt   # textual
+.venv/bin/pip install -r requirements.txt   # flet
 ```
 
 A UI (e o botão da Waybar) rodam com `.venv/bin/python -m apolo.cli review`.
@@ -132,7 +132,7 @@ python -m apolo.cli run --loop           # roda sozinho a cada 15min (Ctrl+C pra
                                           # não depende de systemd/Task Scheduler/launchd
 python -m apolo.cli run --loop --interval 5min
 python -m apolo.cli status               # contadores e ações sugeridas
-python -m apolo.cli review               # abre o hub (UI Textual) — ver docs/ui.md
+python -m apolo.cli review               # abre o hub (app desktop Flet) — ver docs/ui.md
 python -m apolo.cli rules                # lista as regras
 python -m apolo.cli block promo.x.com    # adiciona à blocklist
 python -m apolo.cli allow chefe@x.com    # adiciona à allowlist
@@ -229,16 +229,16 @@ linha lá.
 terminal e o resto entra na fila de revisão (`aguardando`) com a ação sugerida.
 A execução automática (sem o dono) só chega quando uma regra for promovida (passo 6).
 
-## Interface de revisão (passo 3, em Textual)
+## Interface de revisão (passo 3, app desktop em Flet)
 
-`apolo review` abre o **hub** — uma UI dark, keyboard-first, em
-[Textual](https://textual.textualize.io/) (substitui a antiga TUI em curses).
-Do hub você navega por seta + Enter para: a **fila de revisão**, o **gerenciador
-de regras** (listar/remover/adicionar com prévia ao vivo), as **configurações**
-(timer, IA, unsubscribe) e o **status**. Documentação completa em
-[`docs/ui.md`](docs/ui.md).
+`apolo review` abre o **hub** — um app desktop dark, keyboard-first, em
+[Flet](https://flet.dev/) (substitui a antiga TUI em Textual — sem terminal,
+janela nativa). Do hub você navega por seta + Enter para: a **fila de
+revisão**, o **gerenciador de regras** (listar/remover/adicionar com prévia ao
+vivo), as **configurações** (timer, IA, unsubscribe) e o **status**.
+Documentação completa em [`docs/ui.md`](docs/ui.md).
 
-O Textual é a **única** dependência externa e vive num venv do projeto; o botão
+O Flet é a **única** dependência externa e vive num venv do projeto; o botão
 da Waybar e o `apolo review` rodam com `.venv/bin/python` (ver topo do README e
 [`docs/waybar.md`](docs/waybar.md)). O caminho do timer (`apolo run`) nunca o
 importa.

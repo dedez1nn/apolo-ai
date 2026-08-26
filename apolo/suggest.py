@@ -2,8 +2,9 @@
 
 Nunca aplica nada sozinho — só olha pro que o dono já decidiu (`emails.acao_aplicada`)
 e propõe promover um padrão consistente (domínio, ou domínio + mesmo assunto
-recorrente) a regra permanente de allowlist/blocklist. Quem decide é a tela
-(apolo/ui/suggest_screen.py); este módulo só gera candidatas.
+recorrente) a regra permanente de allowlist/blocklist. Quem decide é uma tela
+de sugestões (ainda não portada pro app desktop Flet — fora do escopo da
+Fase 1, ver plano de migração); este módulo só gera candidatas.
 
 MIN_AMOSTRA e LIMIAR_SKEW são um primeiro palpite — ajustar olhando casos reais,
 mesmo espírito do disclaimer em apolo/verify.py.

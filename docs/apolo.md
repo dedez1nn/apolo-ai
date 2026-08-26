@@ -56,7 +56,7 @@ Cascata com precedência clara; a **primeira regra que casar decide**. A ordem i
 ## Superfície da CLI
 
 - `apolo run` — dispara uma passada manual (a mesma que o timer chama).
-- `apolo review` — abre a UI (hub Textual) pra despachar a fila e gerenciar regras/config (ver docs/ui.md).
+- `apolo review` — abre a UI (hub, app desktop Flet) pra despachar a fila e gerenciar regras/config (ver docs/ui.md).
 - `apolo block <dominio|email>` / `apolo allow <dominio|email>` — adiciona à regra direto do terminal, sem abrir o TOML.
 - `apolo rules` — lista/edita o que está configurado.
 - `apolo status` — última execução, tamanho da fila, contadores.
@@ -78,7 +78,7 @@ apolo/
   notify.py           # notify-send
   scheduler.py        # controle do systemd timer (UI + setup)
   config_writer.py    # escrita parcial do .env (UI de configurações)
-  ui/                 # interface de revisão em Textual (ver docs/ui.md)
+  gui/                # interface de revisão, app desktop Flet (ver docs/ui.md)
   systemd/            # apolo.service + apolo.timer
 ```
 
@@ -90,7 +90,7 @@ apolo/
 - Notificação via `notify-send` (libnotify/D-Bus).
 - Agendamento via `systemd` timer + serviço `oneshot` (`journalctl -u apolo` pro log).
 - Estado em SQLite; regras em TOML.
-- Interface de revisão como TUI (textual/rich).
+- Interface de revisão como app desktop nativo (Flet) — sem terminal.
 
 ## Roadmap incremental (ordem sem retrabalho)
 

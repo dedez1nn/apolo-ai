@@ -7,7 +7,7 @@ concreto por sistema operacional (`linux/`).
 
 O resto do código nunca importa daqui direto: `apolo/notify.py`,
 `apolo/scheduler.py`, `apolo/secrets.py` e o clipboard em `apolo/extract.py`/
-`apolo/ui/settings.py` continuam sendo a API pública estável, e por baixo
+`apolo/gui/settings.py` continuam sendo a API pública estável, e por baixo
 delegam pra `get_notifier()`/`get_scheduler()`/`get_secret_store()`/
 `get_clipboard()` daqui. Isso é o único jeito de trocar o backend (adicionar
 um SO novo) sem tocar em nada fora deste pacote.

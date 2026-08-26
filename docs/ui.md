@@ -1,97 +1,119 @@
-# UI do Apolo (Textual)
+# UI do Apolo (Flet)
 
-A interface gráfica do Apolo — um **hub** em terminal que abre no clique do botão
-da Waybar (ou em `apolo review`). Substitui a antiga TUI em curses por uma UI dark,
-com ícones, cores por ação e foco total em **teclado** (seta + Enter, sem mouse
-obrigatório). Construída em [Textual](https://textual.textualize.io/).
+A interface gráfica do Apolo — um app **desktop nativo** (não terminal) que abre
+no clique do botão da Waybar/bandeja (ou em `apolo review`). Substitui a antiga
+TUI em Textual: mesma UI dark, cores por ação e foco em **teclado** (seta +
+Enter, com clique como complemento, não substituto), agora numa janela de
+verdade — sem depender de terminal nenhum. Construída em
+[Flet](https://flet.dev/).
 
-> Mockups/screenshots: a UI usa glyphs de **nerd font** (ícones) — eles aparecem no
-> terminal real (kitty), mas não em conversões SVG sem a fonte.
+Paleta tirada do próprio motivo do nome do projeto (ver
+[README](../README.md), "Por que Apolo?"): sol (ouro, ênfase/ação primária),
+louro (verde, "manter"), terracota queimada ("lixeira"), sobre um fundo único
+escuro ("noite egeia") — sem tema claro pro app em si, sem gradiente.
+
+> Migração faseada (Textual → Flet): esta página documenta a **Fase 1** —
+> caminho principal só. Swipe, Sugestões de regra, Ruído e os formulários de
+> conta Gmail/IMAP ainda não foram portados (ver seção "O que falta" no fim).
 
 ## Princípios
 
-- **Lazy + isolada.** Todo o pacote `apolo/ui/` só é importado quando a UI abre
+- **Lazy + isolada.** Todo o pacote `apolo/gui/` só é importado quando a UI abre
   (import lazy no `cli.cmd_review`). O caminho do timer (`apolo run`) **nunca**
-  importa Textual — o núcleo segue 100% stdlib. Veja [README](../README.md).
-- **A UI não toca a rede.** Ela só **lê a fila** (passada pelo `cli`) e **escreve
+  importa Flet — o núcleo segue 100% stdlib. Veja [README](../README.md).
+- **A UI não toca a rede** (com duas exceções pontuais e conscientes: checar
+  token Gmail ao abrir, e buscar corpo do email pra "pegar código"/"ver
+  corpo"). Fora isso, ela só **lê a fila** (passada pelo `cli`) e **escreve
   arquivos locais** (regras no TOML, ajustes no `.env`, units do systemd). O
-  *dispatch* real via IMAP (mover pra Trash) acontece **depois que o app fecha**,
-  no `cli`, com as decisões que o app devolve. Mantém o modelo offline do passo 3.
-- **Keyboard-first.** Cada tela lista os atalhos no rodapé (Footer do Textual).
+  *dispatch* real via IMAP (mover pra Trash) acontece **dentro da própria
+  tela de fila**, ao aplicar — não precisa fechar o app. Mantém o modelo
+  offline do passo 3.
+- **Keyboard-first.** Cada tela lista os atalhos no rodapé; clique é um
+  complemento (seleciona/abre), nunca a única forma de operar uma ação.
 
 ## Como abre
 
 ```
-botão da Waybar ──► kitty -e apolo-review.sh ──► .venv/bin/python -m apolo.cli review
-                                                          │
-                                                  cli.cmd_review:
-                                                   1. lê a fila + stats do SQLite
-                                                   2. run_ui(rows, rules_path, stats, config)
-                                                   3. ao fechar, despacha via IMAP os itens decididos
+botão da Waybar/bandeja ──► .venv/bin/python -m apolo.cli review
+                                       │
+                               cli.cmd_review:
+                                1. lê a fila + stats do SQLite
+                                2. run_ui(rows, rules_path, stats, config) — abre a janela, bloqueia
+                                3. ao fechar, despacha por garantia qualquer item que tenha
+                                   voltado sem ter sido aplicado inline (raro — ver "Revisar fila")
 ```
 
-A UI depende do **Textual**, que vive no venv do projeto (`~/proton-api/.venv`).
-O launcher da Waybar (`~/.config/waybar/apolo-review.sh`) já aponta pro python do
-venv — detalhes em [waybar.md](waybar.md).
+Sem terminal no meio: o app é uma janela desktop, então o launcher (Waybar,
+bandeja do Windows, barra de menu do macOS) só precisa rodar o comando —
+nenhum deles abre mais um `kitty`/console pra isso. Detalhes por SO em
+[waybar.md](waybar.md) (Linux) e `windows/apolo_tray.py` (Windows).
 
-## Telas
+## Telas (Fase 1)
 
-### 󰊫 Hub (inicial)
+### Hub (inicial)
 
-Menu navegável por `↑↓`/`jk` + `Enter`. Mostra relógio ao vivo, tamanho da fila e
-a última passada, com *badges* de contagem (fila, regras). `q`/`esc` fecha o app.
+Lista navegável por `↑↓`/`jk` + `Enter` (clique também abre). Mostra a fila
+atual e a última passada no cabeçalho, com *badges* de contagem (fila,
+regras). `q`/`esc` fecha o app.
 
 | Item | Estado |
 |---|---|
 | Revisar fila | ✅ pronto |
-| Adicionar regra | → unificado na tela **Regras** |
-| Prévia (dry-run da cascata na INBOX) | 🚧 stub |
 | Regras configuradas | ✅ pronto |
-| Rodar agora (uma passada) | 🚧 stub |
 | Configurações | ✅ pronto |
 | Status & contadores | ✅ pronto |
 
-### 󰋚 Revisar fila
+O painel mestre-detalhe de prévia ao vivo que a versão Textual tinha (mostrar
+amostra da fila/regras conforme o cursor move, sem entrar na sub-tela) foi
+cortado nesta fase — ver "O que falta".
+
+### Revisar fila
 
 A fila de revisão (`aguardando`) repaginada. Cada email mostra a ação sugerida
 (cor + ícone), remetente, data e assunto.
 
 ```
-d lixeira   m manter   b block   a allow   c código   u desfazer   ↵ aplicar   esc voltar
+d lixeira   m manter   b block   a allow   v ver corpo   c código   s sincronizar   u desfazer   tab conta   ↵ aplicar   esc voltar
 ```
 
 - Decidir (`d`/`m`/`b`/`a`) **tira o email da lista na hora** (vai pra uma pilha de
   histórico da sessão); `u` desfaz a última.
+- `s` **sincroniza ao vivo**: varre contas/pastas por completo
+  (`apolo.sync.run_sync`) numa thread, sem travar a tela — itens novos entram
+  direto na lista, e os que dependem do Ollama aparecem como "analisando" até
+  a resposta chegar.
+- `v` **ver corpo**: mostra o corpo do email selecionado como texto limpo
+  (`apolo.clean.message_to_text`) — versão enxuta da Fase 1; sem resolução de
+  imagem inline por CID (ver "O que falta").
 - `c` **pega o código**: puxa o corpo do email selecionado (Proton via Bridge,
   Gmail via API — `BODY.PEEK`, não marca lido) e extrai candidatos a **código de
   confirmação** (6 dígitos, com ou sem `-`, ou alfanumérico) e **links de
-  confirmação** (`apolo/extract.py`). Um modal lista os candidatos por confiança;
-  `↵` copia o escolhido pro clipboard (`wl-copy`/`xclip`/`xsel`), `esc` fecha. É a
-  única ação da fila que toca a rede na hora, junto do `↵` aplicar.
+  confirmação** (`apolo/extract.py`). Um diálogo lista os candidatos por
+  confiança; `↵` copia o escolhido pro clipboard, `esc` fecha.
 - `b`/`a` são o **loop de aprendizado**: gravam o *domínio* do remetente na
   block/allowlist na hora (via `rules/writer.py`) e ajustam a ação do item; `u`
   também remove a regra recém-criada.
-- `↵` **aplica**: as decisões viram itens de dispatch e a tela volta ao Hub. Sair
-  com `esc` **cancela** as decisões não aplicadas (devolve à fila).
-- O dispatch IMAP (mover `lixeira` pra Trash) roda no `cli`, ao fechar o app.
+- `↵` **aplica**: despacha as decisões AGORA (via IMAP/Gmail, num diálogo com
+  progresso numa thread) e a tela volta ao Hub. Sair com `esc` **cancela** as
+  decisões não aplicadas (devolve à fila).
 
-### 󰈙 Regras (listar · remover · adicionar)
+### Regras (listar · remover · adicionar/editar)
 
-Gerenciador das listas allow/block. Lista as entradas (allowlist em verde,
-blocklist em vermelho) com tipo e valor.
+Gerenciador das listas allow/block. Lista as entradas (allowlist em louro,
+blocklist em terracota) com tipo e valor.
 
 ```
-a adicionar    x (ou Delete) remover    esc voltar
+a adicionar    e editar    x (ou Delete) remover    esc voltar
 ```
 
 - **`x`** remove a regra selecionada na hora (via `rules/writer.remove_rule_entry`).
-- **`a`** abre o modal **Nova regra** com **prévia ao vivo**: você escolhe a lista,
-  digita o valor (o tipo — domínio vs remetente — é detectado), e a tela mostra
-  **na hora quantos e quais emails da fila aquela regra pegaria** antes de salvar
-  (`ctrl+s`). Grava via `rules/writer.add_rule_entry`.
+- **`a`/`e`** abrem um diálogo **Nova regra**/**Editar regra** com **prévia ao
+  vivo**: escolhe a lista, digita o valor (o tipo — domínio vs remetente — é
+  detectado), e o diálogo mostra **na hora quantos emails da fila aquela
+  regra pegaria** antes de salvar (`ctrl+s`).
 - O contador de regras do Hub é atualizado ao voltar.
 
-### ⚙ Configurações
+### Configurações
 
 A **única** tela que muda estado fora da fila. Três grupos, três destinos. Nada é
 aplicado enquanto você edita — só no **`ctrl+s`** (salvar); `esc` volta.
@@ -114,7 +136,7 @@ Ressalvas (intencionais):
 - **TOML:** a ação do unsubscribe vale já na próxima passada (o engine relê o TOML
   a cada execução).
 
-### 󰋽 Status
+### Status
 
 Leitura pura: última passada, tamanho da fila, total de regras e contadores por
 status / ação sugerida (juntados pelo `cli` antes de abrir o app).
@@ -122,16 +144,19 @@ status / ação sugerida (juntados pelo `cli` antes de abrir o app).
 ## Arquivos
 
 ```
-apolo/ui/
+apolo/gui/
   __init__.py        # expõe run_ui (import lazy de tudo)
-  app.py             # ApoloApp (App raiz) + UiStats + run_ui()
+  app.py             # ApoloApp (estado raiz + pilha de navegação/teclado) + UiStats + run_ui()
+  theme.py           # paleta Apolo (sol/louro/terracota/mármore/noite egeia)
   model.py           # Item da fila + ícones/cores/formatadores
+  widgets.py         # cabeçalho/rodapé/scaffold compartilhados entre telas
   hub.py             # HubScreen (menu inicial + roteamento)
-  queue.py           # QueueScreen (fila de revisão)
-  rules_screen.py    # RulesScreen + AddRuleModal (prévia ao vivo)
+  queue.py           # QueueScreen + DispatchProgress + CodeModal
+  rules_screen.py    # RulesScreen + RuleFormModal (adicionar/editar, prévia ao vivo)
   settings.py        # SettingsScreen (timer / .env / TOML)
   status.py          # StatusScreen (leitura)
-  app.tcss           # tema dark (TCSS)
+  confirm.py         # ConfirmModal genérico (sim/não)
+  body_view.py        # "ver corpo" — texto limpo, sem parser de HTML
 
 apolo/scheduler.py        # controle do systemd timer (stdlib) — usado pela UI e pelo `setup`
 apolo/config_writer.py    # escrita parcial e atômica do .env (stdlib)
@@ -139,11 +164,18 @@ apolo/rules/writer.py     # + list_entries / set_unsubscribe_acao / get_unsubscr
 ```
 
 `apolo/scheduler.py` e `apolo/config_writer.py` são **stdlib** e ficam fora de
-`ui/` de propósito: são lógica de escrita testável, sem Textual.
+`gui/` de propósito: são lógica de escrita testável, sem Flet.
 
-## Testes
+## O que falta (Fase 2 — fora do escopo da migração inicial)
 
-As telas são exercitadas *headless* com `App.run_test()` (piloto do Textual):
-navegação, decisões na fila, salvar configurações (com checagem de que as
-credenciais do `.env` são preservadas) e o ciclo adicionar→prever→remover de
-regras. Os ícones nerd-font não influenciam a lógica testada.
+Cortado deliberadamente da Fase 1 pra manter o caminho principal pequeno e
+verificável; nenhum deles tem fallback pra TUI antiga (apagada) — ficam
+indisponíveis até serem portados:
+
+- Swipe (mesma fila em modo "cartas"), Sugestões de regra (baseado no
+  histórico), Ruído (emails auto-enviados à lixeira, com restaurar).
+- Formulários de conta Gmail/IMAP — `apolo accounts add` na CLI cobre
+  onboarding de conta nesse meio-tempo.
+- Painel mestre-detalhe de prévia ao vivo no Hub.
+- Resolução de imagem inline por CID em "ver corpo" (`apolo/gui/body_view.py`
+  hoje só mostra texto limpo).

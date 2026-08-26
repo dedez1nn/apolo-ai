@@ -1,5 +1,5 @@
-"""Ícone na bandeja do sistema (Windows): abre `apolo review` num terminal e
-liga o Proton Bridge quando ele estiver desligado.
+"""Ícone na bandeja do sistema (Windows): abre `apolo review` (app desktop
+Flet) e liga o Proton Bridge quando ele estiver desligado.
 
 Equivalente Windows do botão da Waybar no Linux (ver docs/waybar.md): não faz
 parte do núcleo do Apolo, só é um lançador. A interface já abre sozinha
@@ -30,7 +30,6 @@ import os
 import socket
 import subprocess
 import sys
-import time
 import traceback
 from pathlib import Path
 
@@ -155,11 +154,11 @@ def _abrir_bridge() -> tuple[bool, str]:
     return False, "Bridge não encontrado nos caminhos padrão. Abra manualmente."
 
 
-# Processo do console de review em andamento (None = nenhum rodando).
-# CREATE_NEW_CONSOLE cria um processo totalmente desacoplado -- fechar o
-# ícone da bandeja não mata isso sozinho, então guardamos o handle aqui pra
-# 1) não empilhar uma revisão em cima da outra a cada clique e 2) matar a
-# árvore inteira (cmd.exe + conhost.exe + python.exe) quando o usuário sair.
+# Processo de review em andamento (None = nenhum rodando) -- só pra 1) não
+# empilhar uma revisão em cima da outra a cada clique e 2) matar de vez ao
+# sair. `apolo review` abre o app desktop Flet direto (janela normal, sem
+# console) -- nada de CREATE_NEW_CONSOLE/AttachConsole/ShowWindow aqui: isso
+# só existia pra mostrar o console da TUI antiga, que não existe mais.
 _processo_review: subprocess.Popen | None = None
 
 
@@ -176,55 +175,14 @@ def _lancar_review(icon: pystray.Icon | None = None) -> None:
     python_exe = _python_exe(project_root)
     _log(f"_lancar_review: project_root={project_root} python_exe={python_exe}")
 
-    # shell=True com uma STRING (não uma lista) -- se fosse ["cmd", "/c",
-    # comando], o Popen re-escapa as aspas que já estão dentro de `comando`
-    # (list2cmdline duplica aspas internas), o que quebra o caminho do
-    # python.exe. Com shell=True a string vai direto pro `cmd /c`, sem
-    # reescaping.
-    # `|| pause`: se `apolo.cli review` quebrar na hora, o console segura a
-    # mensagem de erro em vez de fechar sozinho antes de dar tempo de ler.
-    comando = f'"{python_exe}" -m apolo.cli review || pause'
-    # Apolo.exe é --windowed (sem console próprio, show-state oculto) -- sem
-    # forçar visibilidade o Windows propaga esse mesmo estado oculto pro
-    # console novo do CREATE_NEW_CONSOLE, e a UI roda escondida (processo
-    # normal, janela invisível, testado e confirmado com GetWindowVisible).
-    #
-    # STARTUPINFO + STARTF_USESHOWWINDOW/SW_SHOW NÃO resolve isso -- testado
-    # isolado (fora do Apolo, script mínimo com o mesmo padrão) e o console
-    # nasce invisível do mesmo jeito. É uma limitação da combinação
-    # CREATE_NEW_CONSOLE + shell=True, não um bug específico daqui.
-    #
-    # O que funciona: deixar o console nascer normal (com o show-state que
-    # vier) e, já com o processo rodando, anexar nele via AttachConsole e
-    # mandar mostrar pela API do Windows diretamente (GetConsoleWindow +
-    # ShowWindow), em vez de tentar controlar o show-state na criação.
     try:
         _processo_review = subprocess.Popen(
-            comando,
-            shell=True,
+            [python_exe, "-m", "apolo.cli", "review"],
             cwd=str(project_root),
-            creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         _log(f"_lancar_review: Popen disparado sem exceção (pid={_processo_review.pid})")
     except Exception:
         _log("_lancar_review: FALHA no Popen:\n" + traceback.format_exc())
-        return
-
-    try:
-        kernel32 = ctypes.windll.kernel32
-        user32 = ctypes.windll.user32
-        time.sleep(0.3)  # dar tempo do conhost criar a janela do console
-        kernel32.FreeConsole()
-        if kernel32.AttachConsole(_processo_review.pid):
-            hwnd = kernel32.GetConsoleWindow()
-            user32.ShowWindow(hwnd, 5)  # SW_SHOW
-            user32.SetForegroundWindow(hwnd)
-            kernel32.FreeConsole()
-            _log(f"_lancar_review: janela mostrada via AttachConsole (hwnd={hwnd})")
-        else:
-            _log("_lancar_review: AttachConsole falhou, janela pode ficar invisível")
-    except Exception:
-        _log("_lancar_review: FALHA ao mostrar a janela:\n" + traceback.format_exc())
 
 
 def abrir_review(icon: pystray.Icon, item: pystray.MenuItem) -> None:
@@ -250,17 +208,17 @@ def _texto_bridge(item: pystray.MenuItem) -> str:
 def sair(icon: pystray.Icon, item: pystray.MenuItem) -> None:
     _log("menu: Sair clicado")
     if _processo_review is not None and _processo_review.poll() is None:
-        # /T mata a árvore inteira (cmd.exe + conhost.exe + python.exe) --
-        # só terminate()/kill() no Popen mataria o cmd.exe do CREATE_NEW_CONSOLE
-        # e deixaria o python.exe (o processo que importa) órfão rodando.
+        # Processo único (sem cmd.exe/conhost.exe no meio, ver _lancar_review)
+        # -- terminate() já basta; kill() só se ele não sair a tempo.
         try:
-            subprocess.run(
-                ["taskkill", "/PID", str(_processo_review.pid), "/T", "/F"],
-                capture_output=True,
-            )
-            _log(f"sair: taskkill na árvore do pid={_processo_review.pid}")
+            _processo_review.terminate()
+            _processo_review.wait(timeout=3)
+            _log(f"sair: terminate() no pid={_processo_review.pid}")
+        except subprocess.TimeoutExpired:
+            _processo_review.kill()
+            _log(f"sair: terminate() não saiu a tempo, kill() no pid={_processo_review.pid}")
         except Exception:
-            _log("sair: FALHA no taskkill:\n" + traceback.format_exc())
+            _log("sair: FALHA ao encerrar o processo:\n" + traceback.format_exc())
     icon.stop()
 
 

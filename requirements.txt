@@ -1,10 +1,7 @@
-# Dependências externas do Apolo — apenas a UI (apolo/ui/) usa Textual.
+# Dependências externas do Apolo — apenas a UI (apolo/gui/) usa Flet.
 # O núcleo (fetch/rules/ai/storage/actions) e o `apolo run` seguem 100% stdlib
 # no Linux (o cofre de senha usa `pass`, um binário, não uma lib Python).
-textual>=8,<9
-# Renderiza os carimbos (PNG) do modo swipe — imagem de verdade via protocolo
-# gráfico do terminal (kitty/iTerm/sixel), com fallback em blocos Unicode.
-textual-image>=0.13,<0.14
+flet>=0.86,<0.87
 # Cofre de senha em Windows (Credential Manager) e macOS (Keychain) — ver
 # apolo/platform/_keyring.py. Marcador de ambiente restringe a instalação a
 # esses dois SOs; no Linux o `pip install` nem baixa esse pacote.

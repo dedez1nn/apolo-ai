@@ -1,8 +1,8 @@
 """Entrada única do Apolo.
 
 `apolo run` varre e classifica (com `--loop`, roda sozinho em intervalo, sem
-depender de nenhum agendador do sistema); `apolo review` abre a TUI pra
-despachar a fila; `apolo block`/`allow` editam as regras pelo terminal;
+depender de nenhum agendador do sistema); `apolo review` abre o app desktop
+(Flet) pra despachar a fila; `apolo block`/`allow` editam as regras pelo terminal;
 `apolo rules` lista o config; `apolo status` mostra os contadores; `apolo
 setup` instala o timer do systemd, onde disponível. (undo chega depois.)
 """
@@ -929,16 +929,16 @@ def _rules_count(rules_path: Path) -> int:
 
 
 def cmd_review(config: Config) -> int:
-    """Abre o hub (UI Textual) pra revisar a fila.
+    """Abre o hub (app desktop Flet) pra revisar a fila.
 
-    O despacho real (mover pra lixeira via IMAP/Gmail) acontece DENTRO da TUI,
-    na hora em que o dono aperta Enter pra aplicar — ver apolo.ui.queue. Aqui só
+    O despacho real (mover pra lixeira via IMAP/Gmail) acontece DENTRO do app,
+    na hora em que o dono aperta Enter pra aplicar — ver apolo.gui.queue. Aqui só
     montamos os dados, abrimos a UI e, por garantia, despachamos qualquer item
     que por algum motivo tenha voltado sem ter sido aplicado inline.
     """
     from apolo.actions import apply_decisions
-    from apolo.ui import run_ui
-    from apolo.ui.app import UiStats
+    from apolo.gui import run_ui
+    from apolo.gui.app import UiStats
 
     accounts_by_name = {
         a.name: a for a in load_accounts(config.accounts_path) if a.provider == "gmail"
@@ -1347,10 +1347,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     if sys.platform == "win32":
         # O console do Windows abre com a codepage legada (cp1252 etc.), que
-        # não sabe codificar os glifos Unicode do cabeçalho da UI (ex.: ◈ em
-        # apolo/ui/theme.py) -- derruba a thread de escrita do Textual na
-        # primeira tela e a UI trava sem aviso nenhum. Força UTF-8 antes de
-        # qualquer print/UI rodar; best-effort, não pode virar motivo de crash.
+        # não sabe codificar glifos Unicode -- qualquer print com caractere
+        # fora do cp1252 (ex.: nomes de conta, mensagens de erro) quebra sem
+        # aviso. O app desktop (Flet) não depende disso -- só o `print()` do
+        # cli em si. Força UTF-8 antes de qualquer print rodar; best-effort,
+        # não pode virar motivo de crash.
         try:
             sys.stdout.reconfigure(encoding="utf-8", errors="replace")
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")

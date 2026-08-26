@@ -28,7 +28,7 @@ responder, roda `open -a "Proton Mail Bridge"`.
    `apolo review`; "Ligar Proton Bridge" liga o Bridge se estiver desligado.
 
 Sem `.venv/bin/python`, cai no `python3` do `PATH` — funciona, mas sem o
-Textual instalado a UI não abre (rode o setup do `../README.md` primeiro).
+Flet instalado a UI não abre (rode o setup do `../README.md` primeiro).
 
 ## Gerar o `.app`
 
