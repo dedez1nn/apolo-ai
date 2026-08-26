@@ -11,7 +11,7 @@ import asyncio
 import flet as ft
 
 from apolo.gui.theme import COR_LIXEIRA, COR_MANTER, INK, INK_DIM, INK_FAINT, SOL, SURFACE
-from apolo.gui.widgets import ARROW_DOWN, ARROW_UP, ESCAPE, flash, header, key, keybar, scaffold
+from apolo.gui.widgets import ARROW_DOWN, ARROW_UP, ESCAPE, flash, header, key, keybar, rodape, scaffold
 
 _LISTA_COR = {"allowlist": COR_MANTER, "blocklist": COR_LIXEIRA}
 _LISTA_ICONE = {"allowlist": "✓", "blocklist": "●"}
@@ -57,9 +57,9 @@ class RulesScreen:
                 ],
                 spacing=10, expand=True,
             ),
-            ft.Column(
-                [flash(self._msg_ref), keybar([("A", "Adicionar"), ("E", "Editar"), ("X", "Remover"), ("Esc", "Voltar")])],
-                spacing=0,
+            rodape(
+                flash(self._msg_ref),
+                keybar([("A", "Adicionar"), ("E", "Editar"), ("X", "Remover"), ("Esc", "Voltar")]),
             ),
         )
 
@@ -189,7 +189,7 @@ class RuleFormModal:
     def __init__(self, app, original: tuple[str, str, str] | None = None):
         self.app = app
         self.original = original
-        self._future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._future: asyncio.Future | None = None
         self._shown = False
 
         lista0 = original[0] if original else "blocklist"
@@ -285,7 +285,7 @@ class RuleFormModal:
         self._resolve((lista, tipo, valor.lower().lstrip("@"), status))
 
     def _resolve(self, result) -> None:
-        if not self._future.done():
+        if self._future is not None and not self._future.done():
             self._future.set_result(result)
         self.app.close_dialog()
 
@@ -297,6 +297,7 @@ class RuleFormModal:
             self._salvar()
 
     async def ask(self):
+        self._future = asyncio.get_running_loop().create_future()
         self.app.open_dialog(self.dialog, key_handler=self.on_key)
         self._shown = True
         return await self._future

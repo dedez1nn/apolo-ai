@@ -25,7 +25,7 @@ class BodyViewModal:
     def __init__(self, app, item: Item):
         self.app = app
         self.item = item
-        self._future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._future: asyncio.Future | None = None
         self._shown = False
 
         self.body_text = ft.Text("Buscando o email…", size=13, color=INK_DIM, selectable=True)
@@ -44,11 +44,12 @@ class BodyViewModal:
             self._resolve()
 
     def _resolve(self) -> None:
-        if not self._future.done():
+        if self._future is not None and not self._future.done():
             self._future.set_result(None)
         self.app.close_dialog()
 
     async def show(self) -> None:
+        self._future = asyncio.get_running_loop().create_future()
         self.app.open_dialog(self.dialog, key_handler=self.on_key)
         self._shown = True
         self.app.page.run_thread(self._buscar)

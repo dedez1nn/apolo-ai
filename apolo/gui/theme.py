@@ -30,3 +30,8 @@ COR_MANTER = LOURO
 COR_REVISAR = AMBAR
 
 GUTTER = "▌"
+
+# Fonte de status (banners, contadores) -- registrada em ApoloApp.main via
+# page.fonts, arquivo embutido em apolo/gui/assets/fonts/. Cai pro padrão do
+# sistema se por algum motivo não carregar (nunca derruba o app).
+FONTE_STATUS = "IBM Plex Mono SemiBold"

@@ -9,7 +9,7 @@ from __future__ import annotations
 import flet as ft
 
 from apolo.gui.theme import INK, INK_FAINT
-from apolo.gui.widgets import ESCAPE, flash, header, key, keybar, scaffold
+from apolo.gui.widgets import ESCAPE, flash, header, key, keybar, rodape, scaffold
 
 
 def _bool_env(v: bool) -> str:
@@ -93,7 +93,7 @@ class SettingsScreen:
         return scaffold(
             header("Configurações", "ajustes locais — nada é aplicado até salvar"),
             body,
-            ft.Column([flash(self._msg_ref), keybar([("Ctrl+S", "Salvar"), ("F2", "Colar senha"), ("Esc", "Voltar")])], spacing=0),
+            rodape(flash(self._msg_ref), keybar([("Ctrl+S", "Salvar"), ("F2", "Colar senha"), ("Esc", "Voltar")])),
         )
 
     def on_key(self, e: ft.KeyboardEvent) -> None:

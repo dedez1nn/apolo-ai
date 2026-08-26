@@ -16,7 +16,7 @@ class ConfirmModal:
 
     def __init__(self, app, mensagem: str, titulo: str = "Confirmar"):
         self.app = app
-        self._future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._future: asyncio.Future | None = None
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(titulo, color=AMBAR, weight=ft.FontWeight.BOLD),
@@ -28,7 +28,7 @@ class ConfirmModal:
         )
 
     def _resolve(self, value: bool) -> None:
-        if not self._future.done():
+        if self._future is not None and not self._future.done():
             self._future.set_result(value)
         self.app.close_dialog()
 
@@ -40,5 +40,9 @@ class ConfirmModal:
             self._resolve(False)
 
     async def ask(self) -> bool:
+        # Future criada aqui dentro (não no __init__) -- get_running_loop()
+        # só é seguro chamado de dentro de uma coroutine já rodando; no
+        # __init__ (síncrono) não há garantia de qual thread/loop está ativo.
+        self._future = asyncio.get_running_loop().create_future()
         self.app.open_dialog(self.dialog, key_handler=self.on_key)
         return await self._future

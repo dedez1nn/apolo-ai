@@ -16,8 +16,8 @@ import flet as ft
 from apolo.actions import DispatchItem
 from apolo.gui.confirm import ConfirmModal
 from apolo.gui.model import ACAO_COR, ACAO_ICONE, ACAO_ROTULO, Item, fmt_data, fmt_remetente
-from apolo.gui.theme import AMBAR, COR_LIXEIRA, COR_MANTER, INK, INK_DIM, SOL, SURFACE
-from apolo.gui.widgets import ARROW_DOWN, ARROW_UP, ENTER, ESCAPE, TAB, flash, header, key, keybar, scaffold
+from apolo.gui.theme import AMBAR, COR_LIXEIRA, COR_MANTER, FONTE_STATUS, INK, INK_DIM, LOURO, SOL, SOL_INK, SURFACE, TERRACOTA
+from apolo.gui.widgets import ARROW_DOWN, ARROW_UP, ENTER, ESCAPE, TAB, flash, header, key, keybar, rodape, scaffold
 from apolo.rules.engine import ACAO_LIXEIRA, ACAO_MANTER, parse_sender
 from apolo.rules.writer import add_rule_entry, remove_rule_entry
 
@@ -43,6 +43,16 @@ class QueueScreen:
         self._contas: list[str | None] = [None]
         self._header_ref: ft.Ref[ft.Text] = ft.Ref()
         self._msg_ref: ft.Ref[ft.Text] = ft.Ref()
+        self._banner_ref: ft.Ref[ft.Text] = ft.Ref()
+        self._banner_container = ft.Container(
+            content=ft.Text(
+                "", ref=self._banner_ref, size=12, weight=ft.FontWeight.BOLD,
+                style=ft.TextStyle(letter_spacing=1.1, font_family=FONTE_STATUS),
+            ),
+            padding=ft.Padding(left=14, right=14, top=9, bottom=9),
+            border_radius=6,
+            visible=False,
+        )
         self._list_col = ft.Column(
             spacing=2, scroll=ft.ScrollMode.AUTO, expand=True,
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -68,19 +78,19 @@ class QueueScreen:
         self._mounted = True
         return scaffold(
             header("Revisar fila"),
-            ft.Column([ft.Text("", ref=self._header_ref, size=12, color=INK_DIM), self._list_col], spacing=8, expand=True),
             ft.Column(
-                [
-                    flash(self._msg_ref),
-                    keybar(
-                        [
-                            ("D", "Lixeira"), ("M", "Manter"), ("B", "Bloquear"), ("A", "Permitir"),
-                            ("V", "Ver corpo"), ("C", "Código"), ("S", "Sincronizar"), ("U", "Desfazer"),
-                            ("Tab", "Conta"), ("Enter", "Aplicar"), ("Esc", "Voltar"),
-                        ]
-                    ),
-                ],
-                spacing=0,
+                [self._banner_container, ft.Text("", ref=self._header_ref, size=12, color=INK_DIM), self._list_col],
+                spacing=8, expand=True,
+            ),
+            rodape(
+                flash(self._msg_ref),
+                keybar(
+                    [
+                        ("D", "Lixeira"), ("M", "Manter"), ("B", "Bloquear"), ("A", "Permitir"),
+                        ("V", "Ver corpo"), ("C", "Código"), ("S", "Sincronizar"), ("U", "Desfazer"),
+                        ("Tab", "Conta"), ("Enter", "Aplicar"), ("Esc", "Voltar"),
+                    ]
+                ),
             ),
         )
 
@@ -163,9 +173,6 @@ class QueueScreen:
             partes.append(f"{len(self.hist)} decidido(s) · U desfaz · Enter aplica")
         if len(self._contas) > 2:
             partes.append(f"conta: {self._conta_atual or 'todas as contas'}")
-        if self._sync_ativo:
-            alvo = f" {self._sync_conta}" if self._sync_conta else ""
-            partes.append(f"sincronizando{alvo}… {self._sync_encontrados} encontrado(s)")
         partes.append(f"● {n_lix} lixeira   ✓ {n_man} manter")
         if self._header_ref.current:
             self._header_ref.current.value = "   ·   ".join(partes)
@@ -176,6 +183,18 @@ class QueueScreen:
         if self._msg_ref.current:
             self._msg_ref.current.value = texto
             self._msg_ref.current.update()
+
+    def _banner(self, texto: str, bg: str, fg: str = "#FFFFFF") -> None:
+        """Status da sincronização (sincronizando/concluída/erro) -- único
+        lugar pra isso, no topo, em vez de espalhado entre a linha de
+        contadores e a mensagem flutuante do rodapé."""
+        self._banner_container.bgcolor = bg
+        self._banner_container.visible = True
+        if self._banner_ref.current:
+            self._banner_ref.current.value = texto.upper()
+            self._banner_ref.current.color = fg
+        if self._mounted:
+            self._banner_container.update()
 
     @staticmethod
     def _chave_item(it: Item) -> tuple:
@@ -202,6 +221,8 @@ class QueueScreen:
             self._pegar_codigo()
         elif k == "u":
             self._desfazer()
+        elif k == "s":
+            self._sincronizar()
         elif k in TAB:
             self._alternar_conta()
         elif k in ENTER:
@@ -333,7 +354,11 @@ class QueueScreen:
             self._msg("configuração não carregada")
             return
         it = self._exibidos[self.idx]
-        self.app.page.run_task(lambda: CodeModal(self.app, it).ask())
+        # run_task exige uma coroutine function de verdade -- um
+        # `lambda: obj.ask()` é uma função comum (só devolve a coroutine ao
+        # ser chamada), não passa no `iscoroutinefunction` do Flet. Passar o
+        # método assíncrono já ligado ao objeto (sem chamar) resolve.
+        self.app.page.run_task(CodeModal(self.app, it).ask)
 
     def _visualizar(self) -> None:
         if self.idx is None or self.idx >= len(self._exibidos):
@@ -344,7 +369,7 @@ class QueueScreen:
         from apolo.gui.body_view import BodyViewModal
 
         it = self._exibidos[self.idx]
-        self.app.page.run_task(lambda: BodyViewModal(self.app, it).show())
+        self.app.page.run_task(BodyViewModal(self.app, it).show)
 
     # ----- sincronizar -----
     def _alternar_conta(self) -> None:
@@ -358,18 +383,22 @@ class QueueScreen:
 
     def _sincronizar(self) -> None:
         if self._sync_ativo:
-            self._msg("sincronização já em andamento…")
+            self._banner("sincronização já em andamento…", AMBAR, SOL_INK)
             return
         if not self.app.config:
-            self._msg("configuração não carregada")
+            self._banner("configuração não carregada — sincronização não iniciada", TERRACOTA)
             return
         conta = self._conta_atual
         self._sync_ativo = True
         self._sync_conta = conta
         self._sync_encontrados = self._sync_analisando = self._sync_auto_lixeira = self._sync_favoritos = 0
+        self._atualizar_banner_sync()
         self._render_header()
-        self._msg(f"sincronizando {conta or 'todas as contas'} em segundo plano…")
         self.app.page.run_thread(self._thread_sync, conta)
+
+    def _atualizar_banner_sync(self) -> None:
+        rotulo = self._sync_conta or "todas as contas"
+        self._banner(f"⇄ sincronizando {rotulo}… {self._sync_encontrados} encontrado(s)", AMBAR, SOL_INK)
 
     def _thread_sync(self, conta: str | None) -> None:
         from apolo.sync import run_sync
@@ -397,6 +426,7 @@ class QueueScreen:
             novo = Item.from_sync(item, acao=item.status)
             novo.analisando = item.sera_analisado
             self._inserir_item_sync(novo)
+            self._atualizar_banner_sync()
             self._render_header()
         elif kind == "analisando":
             item = args[0]
@@ -417,7 +447,7 @@ class QueueScreen:
             self.app.notify(f"[{kwargs.get('conta')}] {kwargs.get('msg')}", severity="warning")
         elif kind == "erro_fatal":
             self._sync_ativo = False
-            self._msg(f"sincronização: {args[0]}")
+            self._banner(f"✗ erro na sincronização: {args[0]}", TERRACOTA)
             self._render_header()
         elif kind == "fim":
             self._sync_ativo = False
@@ -427,7 +457,7 @@ class QueueScreen:
             if self._sync_favoritos:
                 extras.append(f"{self._sync_favoritos} ★ atualizado(s)")
             extra_txt = f" ({', '.join(extras)})" if extras else ""
-            self._msg(f"sincronização concluída — {self._sync_encontrados} novo(s){extra_txt}")
+            self._banner(f"✓ sincronização concluída — {self._sync_encontrados} novo(s){extra_txt}", LOURO)
             if self._sync_auto_lixeira:
                 self.app.notify(f"{self._sync_auto_lixeira} email(s) movido(s) automaticamente pra lixeira.")
             self._render_header()
@@ -505,7 +535,7 @@ class CodeModal:
     def __init__(self, app, item: Item):
         self.app = app
         self.item = item
-        self._future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._future: asyncio.Future | None = None
         self._cands: list = []
         self._shown = False
 
@@ -536,11 +566,12 @@ class CodeModal:
         self._render_cands()
 
     def _resolve(self) -> None:
-        if not self._future.done():
+        if self._future is not None and not self._future.done():
             self._future.set_result(None)
         self.app.close_dialog()
 
     async def ask(self) -> None:
+        self._future = asyncio.get_running_loop().create_future()
         self.app.open_dialog(self.dialog, key_handler=self.on_key)
         self._shown = True
         self.app.page.run_thread(self._buscar)

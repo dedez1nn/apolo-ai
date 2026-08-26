@@ -68,6 +68,7 @@ class ApoloApp:
         page.bgcolor = BG
         page.padding = 0
         page.on_keyboard_event = self._on_key
+        page.fonts = {"IBM Plex Mono SemiBold": "fonts/IBMPlexMono-SemiBold.ttf"}
 
         from apolo.gui.hub import HubScreen
 
@@ -176,8 +177,12 @@ class ApoloApp:
 def run_ui(rows, rules_path: Path, stats: UiStats, config=None, contas_ativas: set | None = None) -> list[DispatchItem]:
     """Abre o app; devolve os itens a despachar (lixeira/manter) ao fechar."""
     app = ApoloApp(rows, rules_path, stats, config, contas_ativas=contas_ativas)
+    # assets_dir absoluto -- o padrão ("assets", relativo ao cwd) quebra
+    # porque `apolo review` roda de qualquer diretório, não da raiz do
+    # projeto (é assim que a fonte da barra de sincronização é achada).
+    assets_dir = str(Path(__file__).resolve().parent / "assets")
     try:
-        ft.run(app.main)
+        ft.run(app.main, assets_dir=assets_dir)
     except Exception:
         logger.exception("app desktop caiu")
         raise

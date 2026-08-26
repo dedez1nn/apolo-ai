@@ -77,7 +77,7 @@ class HubScreen:
             # o próprio rodapé "Navegar/Abrir/Sair" enquanto isso acontece.
             self._detail_container = ft.Container(content=self._painel_ativo.build(), expand=True)
             corpo = ft.Row([nav, divisor, self._detail_container], spacing=0, expand=True)
-            return ft.Column([masthead, corpo], spacing=0, expand=True)
+            return ft.Column([masthead, corpo], spacing=0, expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
         self._detail_container = ft.Container(
             content=self._detalhe(_MENU[self.idx][0]),
@@ -86,7 +86,7 @@ class HubScreen:
         )
         corpo = ft.Row([nav, divisor, self._detail_container], spacing=0, expand=True)
         foot = keybar([("↑↓", "Navegar"), ("Enter", "Abrir"), ("Q", "Sair")])
-        return ft.Column([masthead, corpo, foot], spacing=0, expand=True)
+        return ft.Column([masthead, corpo, foot], spacing=0, expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
     def _stats_texto(self) -> str:
         from apolo.gui.model import fmt_run
