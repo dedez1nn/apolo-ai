@@ -36,7 +36,7 @@ class RulesScreen:
         self.idx = 0
         self.on_close = None
         self._entries: list[tuple[str, str, str]] = []
-        self._rows: list[ft.Container] = []
+        self._rows: list[ft.GestureDetector] = []
         self._msg_ref: ft.Ref[ft.Text] = ft.Ref()
         self._header_ref: ft.Ref[ft.Text] = ft.Ref()
         self._list_col = ft.Column(
@@ -94,11 +94,11 @@ class RulesScreen:
         if self._mounted:
             self._list_col.update()
 
-    def _row(self, i: int, lista: str, tipo: str, valor: str) -> ft.Container:
+    def _row(self, i: int, lista: str, tipo: str, valor: str) -> ft.GestureDetector:
         selecionado = i == self.idx
         cor = _LISTA_COR.get(lista, SOL)
         icone = _LISTA_ICONE.get(lista, "·")
-        return ft.Container(
+        caixa = ft.Container(
             content=ft.Row(
                 [
                     ft.Text(icone, color=cor, weight=ft.FontWeight.BOLD),
@@ -114,9 +114,11 @@ class RulesScreen:
             bgcolor=SOL if selecionado else SURFACE,
             padding=ft.Padding(left=12, right=12, top=8, bottom=8),
             border_radius=6,
-            ink=True,
-            on_click=lambda e, idx=i: self._selecionar(idx),
         )
+        # GestureDetector em vez de Container(ink=True, on_click=...): ver
+        # nota equivalente em queue.py/hub.py (evita a linha disputar foco
+        # de teclado nativo do Flutter com a navegação manual por seta).
+        return ft.GestureDetector(content=caixa, on_tap=lambda e, idx=i: self._selecionar(idx))
 
     def _selecionar(self, idx: int) -> None:
         self.idx = idx

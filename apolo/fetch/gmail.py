@@ -502,6 +502,24 @@ class GmailClient:
         token = self._ensure_token()
         self._api("POST", f"/users/me/messages/{gmail_id}/trash", token=token)
 
+    def unstar_messages_batch(self, gmail_ids: list[str], *, chunk_size: int = 1000) -> None:
+        """Remove o label STARRED (desfavorita) de várias mensagens numa
+        chamada só (batchModify). Usado quando o dono confirma excluir um
+        email favoritado pela fila (ver
+        `apolo.actions.dispatch_lixeira_gmail`): sem isso, a checagem de
+        STARRED bem na hora do despacho barraria a exclusão mesmo com a
+        confirmação explícita.
+        """
+        if not gmail_ids:
+            return
+        token = self._ensure_token()
+        for i in range(0, len(gmail_ids), chunk_size):
+            chunk = gmail_ids[i : i + chunk_size]
+            self._api(
+                "POST", "/users/me/messages/batchModify", token=token,
+                body={"ids": chunk, "removeLabelIds": ["STARRED"]},
+            )
+
     def untrash_message(self, gmail_id: str) -> None:
         """Tira da lixeira via API dedicada (inverso de trash_message) — usado
         pra restaurar um email que o auto-envio mandou pra lixeira sozinho."""

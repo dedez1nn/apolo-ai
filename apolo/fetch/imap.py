@@ -206,6 +206,25 @@ class BridgeClient:
         if typ != "OK":
             raise RuntimeError(f"STORE \\Deleted no(s) UID(s) {seq} falhou")
 
+    def unflag(self, pasta: str, uids: list[int]) -> None:
+        """Remove \\Flagged (desfavorita) de um lote de UIDs.
+
+        Usado quando o dono confirma excluir um email favoritado pela fila
+        (ver `apolo.actions.dispatch_lixeira_imap`): sem isso, a checagem de
+        proteção em `flagged_uids` barraria a exclusão mesmo com a
+        confirmação explícita.
+        """
+        assert self._imap is not None
+        if not uids:
+            return
+        typ, _ = self._imap.select(pasta, readonly=False)
+        if typ != "OK":
+            raise RuntimeError(f"não consegui selecionar {pasta!r} pra escrita")
+        seq = ",".join(str(u) for u in uids)
+        typ, _ = self._imap.uid("STORE", seq, "-FLAGS", "(\\Flagged)")
+        if typ != "OK":
+            raise RuntimeError(f"STORE -Flagged no(s) UID(s) {seq} falhou")
+
     def expunge(self, pasta: str) -> None:
         """EXPUNGE na pasta — efetiva a remoção dos marcados \\Deleted."""
         assert self._imap is not None

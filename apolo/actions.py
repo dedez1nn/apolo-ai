@@ -32,6 +32,7 @@ class DispatchItem:
     acao: str                    # ACAO_LIXEIRA | ACAO_MANTER
     conta: str = "proton"        # "proton" ou "gmail:<name>"
     provider_id: str | None = None  # Gmail message ID; None pra IMAP
+    favorito_confirmado: bool = False  # dono confirmou excluir mesmo favoritado
 
 
 @dataclass
@@ -76,6 +77,23 @@ def dispatch_lixeira_imap(
     except Exception as e:
         logger.warning("checagem de \\Flagged em %s falhou (seguindo sem ela): %s", pasta_real, e)
         flagged = set()
+
+    # Itens favoritados que o dono já confirmou excluir mesmo assim (ver
+    # QueueScreen._confirmar_exclusao): desfavorita antes de seguir, pra não
+    # cair na proteção logo abaixo — a confirmação do dono vale como
+    # permissão explícita de sobrepor o favorito, diferente do caso "alguém
+    # favoritou bem na hora H" sem o dono ter decidido nada sobre isso.
+    a_desfavoritar = [uid for uid in uids if uid in flagged and by_uid[uid].favorito_confirmado]
+    if a_desfavoritar:
+        try:
+            client.unflag(pasta_real, a_desfavoritar)
+            flagged -= set(a_desfavoritar)
+        except Exception as e:
+            logger.warning(
+                "desfavoritar %d UID(s) em %s falhou (seguindo com a proteção): %s",
+                len(a_desfavoritar), pasta_real, e,
+            )
+
     for uid in list(by_uid):
         if uid in flagged:
             item = by_uid.pop(uid)
@@ -225,18 +243,29 @@ def dispatch_lixeira_gmail(
     # Última checagem, bem na hora — mesma ideia de `dispatch_lixeira_imap`
     # (ver lá o porquê). Aqui é por mensagem (`format=minimal`, sem custo de
     # headers/corpo) porque o lote pode misturar labels/pastas diferentes.
-    protegidos: list[DispatchItem] = []
-    ainda_com_id: list[DispatchItem] = []
+    favoritos: set[str] = set()
     for item in lixeira_com_id:
         try:
-            favoritado = client.is_starred(item.provider_id)
+            if client.is_starred(item.provider_id):
+                favoritos.add(item.provider_id)
         except Exception as e:
             logger.warning("checagem de STARRED de %s falhou (seguindo sem ela): %s", item.provider_id, e)
-            favoritado = False
-        if favoritado:
-            protegidos.append(item)
-        else:
-            ainda_com_id.append(item)
+
+    # Confirmado pelo dono (ver dispatch_lixeira_imap pro porquê): desfavorita
+    # antes de seguir, em vez de proteger.
+    a_desfavoritar = [i.provider_id for i in lixeira_com_id if i.provider_id in favoritos and i.favorito_confirmado]
+    if a_desfavoritar:
+        try:
+            client.unstar_messages_batch(a_desfavoritar)
+            favoritos -= set(a_desfavoritar)
+        except Exception as e:
+            logger.warning(
+                "desfavoritar %d mensagem(ns) gmail:%s falhou (seguindo com a proteção): %s",
+                len(a_desfavoritar), client.name, e,
+            )
+
+    protegidos = [i for i in lixeira_com_id if i.provider_id in favoritos]
+    ainda_com_id = [i for i in lixeira_com_id if i.provider_id not in favoritos]
     for item in protegidos:
         store.update_favorito(pasta=item.pasta, uidvalidity=item.uidvalidity, uid=item.uid, favorito=True)
         logger.warning("pulei gmail:%s %s (lixeira): favoritado no servidor — mantido na fila.", client.name, item.provider_id)

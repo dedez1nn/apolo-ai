@@ -30,7 +30,7 @@ class QueueScreen:
     def __init__(self) -> None:
         self.idx: int | None = None
         self.hist: list[tuple] = []
-        self._rows: list[ft.Container] = []
+        self._rows: list[ft.GestureDetector] = []
         self._exibidos: list[Item] = []
         self._sync_ativo = False
         self._sync_conta: str | None = None
@@ -38,7 +38,7 @@ class QueueScreen:
         self._sync_analisando = 0
         self._sync_auto_lixeira = 0
         self._sync_favoritos = 0
-        self._sync_boxes: dict[tuple, ft.Container] = {}
+        self._sync_boxes: dict[tuple, ft.GestureDetector] = {}
         self._filtro_idx = 0
         self._contas: list[str | None] = [None]
         self._header_ref: ft.Ref[ft.Text] = ft.Ref()
@@ -121,7 +121,7 @@ class QueueScreen:
             self._list_col.update()
         self._render_header()
 
-    def _row(self, i: int, it: Item, mostrar_badge: bool) -> ft.Container:
+    def _row(self, i: int, it: Item, mostrar_badge: bool) -> ft.GestureDetector:
         selecionado = i == self.idx
         status = "analisando" if it.analisando else it.acao
         cor = "#FFFFFF" if selecionado else _STATUS_COR.get(status, SOL)
@@ -151,14 +151,18 @@ class QueueScreen:
             no_wrap=True, width=110,
         )
         linha2 = ft.Row([esquerda, centro, direita], spacing=8)
-        return ft.Container(
+        caixa = ft.Container(
             content=ft.Column([titulo, linha2], spacing=2),
             bgcolor=_STATUS_COR.get(status, SOL) if selecionado else SURFACE,
             padding=ft.Padding(left=10, right=10, top=6, bottom=6),
             border_radius=6,
-            ink=True,
-            on_click=lambda e, idx=i: self._selecionar(idx),
         )
+        # GestureDetector em vez de Container(ink=True, on_click=...): um
+        # Container clicável entra na travessia nativa de foco por teclado
+        # do Flutter, e a navegação por seta (tratada manualmente em on_key)
+        # brigava com esse foco nativo, "arrastando" a seleção doutras áreas
+        # da tela (ex.: o menu do Hub) junto. GestureDetector não disputa foco.
+        return ft.GestureDetector(content=caixa, on_tap=lambda e, idx=i: self._selecionar(idx))
 
     def _selecionar(self, idx: int) -> None:
         self.idx = idx
@@ -238,11 +242,11 @@ class QueueScreen:
         self._render_lista()
 
     # ----- decisões -----
-    def _decidir(self, acao: str, rule_undo=None) -> None:
+    def _decidir(self, acao: str, rule_undo=None, favorito_confirmado: bool = False) -> None:
         if self.idx is None or self.idx >= len(self._exibidos):
             return
         it = self._exibidos[self.idx]
-        self.hist.append((it, self.idx, it.acao, rule_undo))
+        self.hist.append((it, self.idx, it.acao, rule_undo, favorito_confirmado))
         it.acao = acao
         self.app.queue.remove(it)
         del self._exibidos[self.idx]
@@ -256,9 +260,16 @@ class QueueScreen:
         it = self._exibidos[self.idx]
 
         async def _run() -> None:
-            if acao == ACAO_LIXEIRA and it.favorito and not await self._confirmar_exclusao(it):
-                return
-            self._decidir(acao)
+            favorito_confirmado = False
+            if acao == ACAO_LIXEIRA and it.favorito:
+                if not await self._confirmar_exclusao(it):
+                    return
+                # Confirmar aqui vale como permissão explícita de sobrepor o
+                # favorito no despacho (ver DispatchItem.favorito_confirmado
+                # e apolo.actions) — senão a checagem de proteção na hora H
+                # barra a exclusão de qualquer jeito e o email "volta".
+                favorito_confirmado = True
+            self._decidir(acao, favorito_confirmado=favorito_confirmado)
             self._msg(f"→ {ACAO_ROTULO[acao]}: {it.remetente}")
 
         self.app.page.run_task(_run)
@@ -277,8 +288,11 @@ class QueueScreen:
         acao = ACAO_LIXEIRA if lista == "blocklist" else ACAO_MANTER
 
         async def _run() -> None:
-            if acao == ACAO_LIXEIRA and it.favorito and not await self._confirmar_exclusao(it):
-                return
+            favorito_confirmado = False
+            if acao == ACAO_LIXEIRA and it.favorito:
+                if not await self._confirmar_exclusao(it):
+                    return
+                favorito_confirmado = True
             _, dominio = parse_sender(it.remetente)
             if not dominio:
                 self._msg("sem domínio no remetente, regra não criada")
@@ -289,7 +303,7 @@ class QueueScreen:
                 self._msg(f"erro ao gravar regra: {e}")
                 return
             rule_undo = (lista, "dominio", dominio) if status == "added" else None
-            self._decidir(acao, rule_undo)
+            self._decidir(acao, rule_undo, favorito_confirmado=favorito_confirmado)
             verbo = "já existia" if status == "exists" else "criada"
             self._msg(f"{lista}: {dominio} {verbo} → {ACAO_ROTULO[acao]}")
 
@@ -299,7 +313,7 @@ class QueueScreen:
         if not self.hist:
             self._msg("nada a desfazer")
             return
-        it, idx, anterior, rule_undo = self.hist.pop()
+        it, idx, anterior, rule_undo, _favorito_confirmado = self.hist.pop()
         pre = ""
         if rule_undo:
             try:
@@ -321,8 +335,9 @@ class QueueScreen:
             DispatchItem(
                 pasta=it.pasta, uidvalidity=it.uidvalidity, uid=it.uid, message_id=it.message_id,
                 acao=it.acao, conta=it.conta, provider_id=it.provider_id,
+                favorito_confirmado=favorito_confirmado,
             )
-            for it, *_ in self.hist
+            for it, _idx, _anterior, _rule_undo, favorito_confirmado in self.hist
             if it.acao in (ACAO_LIXEIRA, ACAO_MANTER)
         ]
         self.hist = []
@@ -541,7 +556,25 @@ class DispatchProgress:
             self._msg_ref.current.color = cor
             self._msg_ref.current.update()
         time.sleep(1.1)  # deixa o resultado visível um instante antes de sumir
+        # Fechar o diálogo (e só depois voltar pro Hub) precisa rodar na
+        # thread do LOOP, não nesta worker thread: fechar um AlertDialog
+        # depende de um round-trip assíncrono com o cliente (animação de
+        # saída), e reconstruir a tela inteira (volta pro menu) em cima
+        # disso, vindo de outra thread, deixava as duas mensagens chegarem
+        # fora de ordem: o app já tinha voltado pro menu do Hub por baixo
+        # (e as setas passavam a navegar ele) enquanto o "Aplicando…" ficava
+        # preso na tela.
+        self.app.page.run_task(self._fechar_e_concluir)
+
+    async def _fechar_e_concluir(self) -> None:
         self.app.close_dialog()
+        # Fechar o AlertDialog e trocar a árvore de telas inteira (volta pro
+        # Hub) são duas rotas empilhadas no mesmo Navigator do Flutter; sem
+        # esperar aqui, a segunda saía colada na primeira e o cliente ficava
+        # com o "Aplicando…" preso na tela mesmo com o Python já de volta no
+        # menu por baixo (confirmado: as duas threads do processo ficam
+        # ociosas nesse estado, não é travamento do lado Python).
+        await asyncio.sleep(0.35)
         self._on_done()
 
 

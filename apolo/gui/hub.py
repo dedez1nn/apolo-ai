@@ -53,11 +53,10 @@ class HubScreen:
         badge_cores = {"gmail": TERRACOTA}
 
         self._boxes = []
-        rows = []
-        for i, (chave, rotulo) in enumerate(_MENU):
-            box = self._row(i, chave, rotulo, badges.get(chave, ""), badge_cores.get(chave, SOL))
-            self._boxes.append(box)
-            rows.append(box)
+        rows = [
+            self._row(i, chave, rotulo, badges.get(chave, ""), badge_cores.get(chave, SOL))
+            for i, (chave, rotulo) in enumerate(_MENU)
+        ]
 
         masthead = ft.Container(
             content=ft.Row(
@@ -106,9 +105,9 @@ class HubScreen:
         fila = f"{n} na fila" if n else "fila vazia"
         return f"{fila}  ·  última {fmt_run(self.app.stats.last_run)}"
 
-    def _row(self, i: int, chave: str, rotulo: str, badge: str, badge_cor: str = SOL) -> ft.Container:
+    def _row(self, i: int, chave: str, rotulo: str, badge: str, badge_cor: str = SOL) -> ft.GestureDetector:
         selecionado = i == self.idx
-        return ft.Container(
+        caixa = ft.Container(
             content=ft.Row(
                 [
                     ft.Text(
@@ -126,10 +125,15 @@ class HubScreen:
             bgcolor=SOL if selecionado else SURFACE,
             padding=ft.Padding(left=12, right=10, top=10, bottom=10),
             border_radius=8,
-            ink=True,
-            on_click=lambda e, k=chave: self._abrir(k),
             data=chave,
         )
+        self._boxes.append(caixa)
+        # GestureDetector em vez de Container(ink=True, on_click=...): um
+        # Container clicável entra na travessia nativa de foco por teclado do
+        # Flutter (setas incluídas), então navegar a fila embutida ao lado
+        # "arrastava" a seleção deste menu junto, mesmo com o teclado sendo
+        # tratado manualmente (ver on_key). GestureDetector não disputa foco.
+        return ft.GestureDetector(content=caixa, on_tap=lambda e, k=chave: self._abrir(k))
 
     # ----- painel de detalhe (direita) -----
     def _titulo(self, texto: str) -> ft.Text:
